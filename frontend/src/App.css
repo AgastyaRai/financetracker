@@ -1,0 +1,241 @@
+.container{
+  width: min(1000px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 64px 0 72px;
+}
+
+h1{
+  margin: 0 0 28px;
+  font-size: 56px;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+
+.hint{
+  margin-top: 18px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.muted{ color: var(--muted); }
+
+.status{
+  margin: 14px 0 0;
+  color: var(--danger);
+  text-align: center;
+}
+
+.tabs{
+  display: flex;
+  justify-content: center;
+  margin: 0 0 22px;
+}
+
+.tabs button{
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.tabs button:first-child{ border-radius: 10px 0 0 10px; }
+.tabs button:last-child{ border-radius: 0 10px 10px 0; border-left: none; }
+
+.tabs button.active{
+  background: linear-gradient(90deg, rgba(124,92,255,0.35), rgba(34,211,238,0.22));
+  border-color: rgba(124,92,255,0.45);
+}
+
+.card{
+  background: linear-gradient(180deg, var(--card2), var(--card));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+.formGrid{
+  width: min(560px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 12px 16px;
+  align-items: center;
+}
+
+.formGrid label{
+  justify-self: end;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* auto-colons */
+.formGrid label::after{
+  content: ":";
+  margin-left: 6px;
+  color: rgba(233,234,242,0.55);
+}
+
+input, select{
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.25);
+  color: var(--text);
+  outline: none;
+}
+
+input:focus, select:focus{
+  border-color: rgba(124,92,255,0.55);
+  box-shadow: 0 0 0 3px rgba(124,92,255,0.20);
+}
+
+button{
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(90deg, rgba(124,92,255,0.70), rgba(34,211,238,0.55));
+  color: #0b0d14;
+  font-weight: 800;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+button:hover{ transform: translateY(-1px); filter: brightness(1.05); }
+button:active{ transform: translateY(0px); }
+
+.fullRow{
+  grid-column: 1 / -1;
+}
+
+.header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.headerRight{
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.grid{
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 900px){
+  .grid{ grid-template-columns: 1fr; }
+  .formGrid{ grid-template-columns: 1fr; }
+  .formGrid label{ justify-self: start; }
+}
+
+table{
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+thead th{
+  text-align: left;
+  font-size: 13px;
+  color: rgba(233,234,242,0.78);
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+  padding: 10px 10px;
+}
+
+tbody td{
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+tbody tr:nth-child(odd){
+  background: rgba(255,255,255,0.03);
+}
+
+.summaryRow{
+  display: flex;
+  justify-content: space-between;
+  margin: 10px 0;
+}
+.summaryRow.strong{
+  font-weight: 900;
+}
+
+
+/* ---------- Better label/input spacing + auto colons ---------- */
+
+/* Make any card that also has formGrid behave like a proper grid */
+.card.formGrid {
+  display: grid;
+  grid-template-columns: 170px minmax(220px, 1fr);
+  gap: 12px 16px;               /* row gap, column gap */
+  align-items: center;
+}
+
+/* Headings/buttons/messages that should span full width */
+.fullRow {
+  grid-column: 1 / -1;
+}
+
+/* Labels: right-aligned + colon automatically */
+.card.formGrid label {
+  justify-self: end;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.card.formGrid label::after {
+  content: ":";
+  margin-left: 8px;
+  opacity: 0.75;
+}
+
+/* Inputs/selects fill their grid cell nicely */
+.card.formGrid input,
+.card.formGrid select {
+  width: 100%;
+}
+
+/* Mobile: stack label above input */
+@media (max-width: 850px) {
+  .card.formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .card.formGrid label {
+    justify-self: start;
+  }
+}
+
+/* ---------- Summary spacing + auto colons ---------- */
+
+.summaryRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 6px 0;
+}
+
+.summaryRow span:first-child::after {
+  content: ":";
+  margin-left: 8px;
+  opacity: 0.75;
+}
+
+/* ---------- Header spacing ---------- */
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
