@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO budgets (user_id, month, category, amount)\n         VALUES ($1, $2, $3, $4)\n         ON CONFLICT (user_id, month, category)\n         DO UPDATE SET amount = EXCLUDED.amount, updated_at = CURRENT_TIMESTAMP",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Text",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cbc412815996b7a6ba7b2abf376ececf9ff8dab9d7c475a3dffa7ec363b85715"
+}

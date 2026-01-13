@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n            b.category as \"category!\",\n            b.amount as \"budget_amount!\",\n            COALESCE(SUM(t.amount), 0)::numeric as \"spent!\"\n        FROM budgets b\n        LEFT JOIN transactions t\n        ON t.user_id = b.user_id\n        AND t.kind = 'expense'\n        AND t.category = b.category\n        AND t.date >= $2\n        AND t.date < $3\n        WHERE b.user_id = $1\n        AND b.month = $2\n        GROUP BY b.category, b.amount\n        ORDER BY b.category ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "category!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "budget_amount!",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 2,
+        "name": "spent!",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "ac0bc7dc9e3818d493d42f6ae3b0b201ee7cce19a1aa2443e863e0e5b68199ce"
+}
