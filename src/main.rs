@@ -86,6 +86,15 @@ async fn main() {
     // set up the database connection
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
+    // debugging
+    // print only host:port/path/query (everything after the last '@')
+    if let Some(i) = db_url.rfind('@') {
+        println!("DB target: {}", &db_url[i + 1..]);
+    } else {
+        println!("DB target: {}", db_url);
+    }
+
+
     let pool = sqlx::PgPool::connect(&db_url).await.expect("Could not connect to database");
     
 
