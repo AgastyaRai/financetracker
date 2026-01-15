@@ -4,6 +4,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::PasswordHash;
 use argon2::PasswordVerifier;
 use sqlx::types::Decimal;
+use sqlx::postgres::PgPoolOptions;
 
 /* data structures */
 
@@ -95,14 +96,21 @@ async fn main() {
     }
 
 
-    let pool = sqlx::PgPool::connect(&db_url).await.expect("Could not connect to database");
-    
+    // create the connection pool, and connect lazily
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect_lazy(&db_url)
+        .expect("Could not create database connection pool");
 
-    // run migrations
-    sqlx::migrate!("./backend/migrations")
-        .run(&pool)
-        .await
-        .expect("Could not run migrations");
+    // run migrations when the environmental variable RUN_MIGRATIONS is set
+    if std::env::var("RUN_MIGRATIONS").is_ok() {
+        println!("Running database migrations...");
+        sqlx::migrate!("./backend/migrations")
+            .run(&pool)
+            .await
+            .expect("Could not run database migrations");
+        println!("Database migrations complete.");
+    }
 
     // now, we set up the HTTP server so the frontend can call routes
     // we get the port number from the environment variable PORT, defaulting to 3000
