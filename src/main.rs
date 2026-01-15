@@ -5,6 +5,8 @@ use argon2::password_hash::PasswordHash;
 use argon2::PasswordVerifier;
 use sqlx::types::Decimal;
 use sqlx::postgres::PgPoolOptions;
+use tracing_subscriber::layer;
+use tower_http::services::{ServeDir, ServeFile};
 
 /* data structures */
 
@@ -138,7 +140,9 @@ async fn main() {
 
 
     // now, we set up our router
-    let app = axum::Router::new()
+
+    // set up the api routes separately
+    let api = axum::Router::new()
         // testing routes
         .route("/test", axum::routing::get(test_handler))
         .route("/test_state", axum::routing::get(test_state_handler))
@@ -156,11 +160,21 @@ async fn main() {
         .route("/budgets", axum::routing::post(upsert_budget))
         .route("/budgets/:user_id", axum::routing::get(get_budgets))
         .route("/budgets/:user_id/progress", axum::routing::get(get_budget_progress))
-        
+
         // layer with CORS for development
         .layer(cors)
         .with_state(state);
-    // now we start the server
+
+    // we nest the api under /api 
+    let app = axum::Router::new()
+        .nest("/api", api)
+        // serve the frontend static files from ./frontend/dist
+        .fallback_service(
+            ServeDir::new("./frontend/dist")
+                .fallback(ServeFile::new("./frontend/dist/index.html")),
+        );
+
+    
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app.into_make_service()).await.unwrap();
 
