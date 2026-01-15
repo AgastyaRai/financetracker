@@ -492,7 +492,6 @@ export default function App() {
         )}
 
         {status ? <p className="status">{status}</p> : null}
-        <p className="hint">Backend must be running on localhost:3000.</p>
       </div>
     );
   }
