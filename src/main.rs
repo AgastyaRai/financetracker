@@ -1,21 +1,22 @@
 use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::SaltString;
 use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::PasswordHash;
 use argon2::PasswordVerifier;
 use sqlx::types::Decimal;
 use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::layer;
-use tower_http::services::{ServeDir, ServeFile};
+use jsonwebtoken::{Algorithm, EncodingKey, DecodingKey, Header, Validation};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /* data structures */
 
 // struct to hold shared application state
 #[derive(Clone)]
-    struct AppState {
-        // so far, we only need the database pool
-        pool: sqlx::PgPool,
-    }
+pub struct AppState {
+    // database connection pool
+    pub pool: sqlx::PgPool,
+    // jwt_secret: String, secret key for signing JWTs
+    pub jwt_secret: String,
+}
 
 // struct for user registration
 #[derive(serde::Deserialize)]
@@ -35,6 +36,7 @@ struct LoginUser {
 #[derive(serde::Deserialize, serde::Serialize)]
 struct LoginResponse {
     user_id: uuid::Uuid,
+    access_token: String, // for JWT authentication
 }
 
 // enum for transaction kind
@@ -79,6 +81,134 @@ struct BudgetProgress {
     remaining: Decimal,
 }
 
+// struct for JWT claims
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Claims {
+    sub: String, // we store the user ID as a string in the JWT claims
+    exp: usize, // expiration time as a unix timestamp
+}
+
+// struct for an authenticated user (for extracting user ID from JWT in protected routes)
+struct AuthenticatedUser {
+    user_id: uuid::Uuid,
+}  
+
+/* constants */
+
+const JWT_EXPIRATION_HOURS: i64 = 24; // JWT expiration time in hours
+
+
+/* helper functions */
+
+// router function to set up all the routes
+pub fn build_app(state: AppState) -> axum::Router {
+    
+    use tower_http::cors::{CorsLayer, Any};
+    use tower_http::services::{ServeDir, ServeFile};
+
+    // add a cors layer to allow requests from any origin (for development purposes)
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+
+    // now, we set up our router
+
+    // set up the api routes separately
+    let api = axum::Router::new()
+        // testing routes
+        .route("/test", axum::routing::get(test_handler))
+        .route("/test_state", axum::routing::get(test_state_handler))
+        .route("/test_db", axum::routing::get(test_db_handler))
+
+        // user routes
+        .route("/users/register", axum::routing::post(register_user))
+        .route("/users/login", axum::routing::post(user_login))
+
+        // transaction routes
+        .route("/transactions", axum::routing::post(add_transaction))
+        .route("/transactions/:user_id", axum::routing::get(get_transactions))
+
+        // budget routes
+        .route("/budgets", axum::routing::post(upsert_budget))
+        .route("/budgets/:user_id", axum::routing::get(get_budgets))
+        .route("/budgets/:user_id/progress", axum::routing::get(get_budget_progress))
+
+        // layer with CORS for development
+        .layer(cors)
+        .with_state(state);
+
+    // we nest the api under /api 
+    axum::Router::new()
+        .nest("/api", api)
+        // serve the frontend static files from ./frontend/dist
+        .fallback_service(
+            ServeDir::new("./frontend/dist")
+                .fallback(ServeFile::new("./frontend/dist/index.html")),
+        )
+}
+
+// helper function to verify a JWT and returns the user ID
+pub fn verify_jwt(token: &str, secret: &str) -> Result<(uuid::Uuid, usize), String> {
+    let decoding_key = DecodingKey::from_secret(secret.as_bytes());
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+
+    // validate the token and decode the claims
+    let token_data = jsonwebtoken::decode::<Claims>(token, &decoding_key, &validation)
+        .map_err(|e| e.to_string())?;
+
+    // parse the user ID from the subject claim
+    let user_id = uuid::Uuid::parse_str(&token_data.claims.sub)
+        .map_err(|e| e.to_string())?;
+    let exp = token_data.claims.exp;
+
+    Ok((user_id, exp))
+}
+
+
+// extractor functions
+
+// this extractor is used in protected routes to extract the user ID from the JWT in the Authorization header
+#[axum::async_trait]
+impl axum::extract::FromRequestParts<AppState> for AuthenticatedUser {
+
+    type Rejection = (axum::http::StatusCode, String);
+
+    async fn from_request_parts(parts: &mut axum::http::request::Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        // get the Authorization header as a string
+        let auth_header = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .ok_or((
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Missing Authorization header".to_string(),
+            ))?;
+
+        // extract token from "Bearer <token>" format by removing the prefix
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or((
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Invalid Authorization format, expected: Bearer <token>".to_string(),
+            ))?;
+
+        // verify the JWT and extract the user ID
+        let (user_id, _exp) = verify_jwt(token, &state.jwt_secret)
+            .map_err(|_e| {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "Invalid or expired token".to_string(),
+                )
+            })?;
+
+        Ok(AuthenticatedUser { user_id })
+    }
+
+}
+
 
 
 #[tokio::main]
@@ -88,6 +218,9 @@ async fn main() {
 
     // set up the database connection
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    // set up the JWT secret key (for signing JWTs)
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
 
     // debugging
     // print only host:port/path/query (everything after the last '@')
@@ -128,53 +261,11 @@ async fn main() {
 
 
     // set up the shared state
-    let state = AppState { pool };
+    let state = AppState { pool, jwt_secret };
 
-    use tower_http::cors::{CorsLayer, Any};
+    // set up the router with the state
+    let app = build_app(state);
 
-    // add a cors layer to allow requests from any origin (for development purposes)
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-
-    // now, we set up our router
-
-    // set up the api routes separately
-    let api = axum::Router::new()
-        // testing routes
-        .route("/test", axum::routing::get(test_handler))
-        .route("/test_state", axum::routing::get(test_state_handler))
-        .route("/test_db", axum::routing::get(test_db_handler))
-
-        // user routes
-        .route("/users/register", axum::routing::post(register_user))
-        .route("/users/login", axum::routing::post(user_login))
-
-        // transaction routes
-        .route("/transactions", axum::routing::post(add_transaction))
-        .route("/transactions/:user_id", axum::routing::get(get_transactions))
-
-        // budget routes
-        .route("/budgets", axum::routing::post(upsert_budget))
-        .route("/budgets/:user_id", axum::routing::get(get_budgets))
-        .route("/budgets/:user_id/progress", axum::routing::get(get_budget_progress))
-
-        // layer with CORS for development
-        .layer(cors)
-        .with_state(state);
-
-    // we nest the api under /api 
-    let app = axum::Router::new()
-        .nest("/api", api)
-        // serve the frontend static files from ./frontend/dist
-        .fallback_service(
-            ServeDir::new("./frontend/dist")
-                .fallback(ServeFile::new("./frontend/dist/index.html")),
-        );
-
-    
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app.into_make_service()).await.unwrap();
 
@@ -191,7 +282,7 @@ async fn main() {
 // route for user registration
 async fn register_user(
     axum::extract::State(state): axum::extract::State<AppState>,
-    axum::extract::Json(userInformation): axum::extract::Json<RegisterUser>
+    axum::extract::Json(user_information): axum::extract::Json<RegisterUser>
 ) -> Result<axum::http::StatusCode, (axum::http::StatusCode, String)> {
 
 
@@ -202,15 +293,15 @@ async fn register_user(
 
     // now hash the password
     let password_hash = Argon2::default()
-        .hash_password(userInformation.password.as_bytes(), &salt)
+        .hash_password(user_information.password.as_bytes(), &salt)
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .to_string();
 
     // now, we insert the user into the database
     sqlx::query!("INSERT into users (username, email, password_hash)
         VALUES ($1, $2, $3)",  
-        userInformation.username,
-        userInformation.email,
+        user_information.username,
+        user_information.email,
         password_hash
     )
     .execute(&state.pool)
@@ -223,29 +314,53 @@ async fn register_user(
 // route for user login (verifying credentials)
 async fn user_login(
     axum::extract::State(state): axum::extract::State<AppState>,
-    axum::extract::Json(loginInformation): axum::extract::Json<LoginUser>
+    axum::extract::Json(login_information): axum::extract::Json<LoginUser>
 ) -> Result<axum::Json<LoginResponse>, (axum::http::StatusCode, String)> {
     // fetch the user from the database by username or email
 
     let user_record = sqlx::query!("SELECT id, password_hash FROM users WHERE username = $1 OR email = $2",
-        loginInformation.identifier,
-        loginInformation.identifier
+        login_information.identifier,
+        login_information.identifier
     )
         .fetch_one(&state.pool)
         .await
-        .map_err(|e| (axum::http::StatusCode::UNAUTHORIZED, "Invalid username/email or password".to_string()))?;
+        .map_err(|_e| (axum::http::StatusCode::UNAUTHORIZED, "Invalid username/email or password".to_string()))?;
 
     // verify the password
     let parsed_hash = argon2::PasswordHash::new(&user_record.password_hash)
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Argon2::default()
-        .verify_password(loginInformation.password.as_bytes(), &parsed_hash)
+        .verify_password(login_information.password.as_bytes(), &parsed_hash)
         .map_err(|_| (axum::http::StatusCode::UNAUTHORIZED, "Invalid username/email or password".to_string()))?;
 
-    // make the response
+
+    // jwt generation
+
+    // get the current time and compute the expiration time
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let exp = now + (JWT_EXPIRATION_HOURS as u64 * 3600); // convert hours to seconds
+
+    // create a claim for the user ID and expiration time
+    let claims = Claims {
+        sub: user_record.id.to_string(), // convert UUID to string for the JWT claim
+        exp: exp as usize, // expiration time as a unix timestamp
+    };
+
+    // set our algorithm to HS256 (defaults to this regardless, but we set it explicitly for clarity)
+    let header = Header::new(Algorithm::HS256);
+
+    // get our secret key as an encoding key
+    let encoding_key = EncodingKey::from_secret(state.jwt_secret.as_bytes()); // convert the secret string to bytes for the encoding key
+
+    // encode the JWT
+    let token = jsonwebtoken::encode(&header, &claims, &encoding_key)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    // make the response struct with the user ID and access token
     let response = axum::Json(LoginResponse {
         user_id: user_record.id,
+        access_token: token, 
     });
 
     Ok(response)
@@ -256,6 +371,7 @@ async fn user_login(
 
 // route for adding a transaction
 async fn add_transaction(
+    AuthenticatedUser { user_id }: AuthenticatedUser, // extract the user ID from the JWT using our custom extractor
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Json(transaction): axum::extract::Json<Transaction>
 ) -> Result<axum::http::StatusCode, (axum::http::StatusCode, String)> {
@@ -265,6 +381,14 @@ async fn add_transaction(
         TransactionKind::Income => "income",
         TransactionKind::Expense => "expense",
     };
+
+    // now, verify that the user ID in the transaction matches the authenticated user ID from the JWT
+    if transaction.user_id != user_id {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "User ID in transaction does not match authenticated user".to_string(),
+        ));
+    }
 
     // insert the transaction into the database
     sqlx::query!("INSERT into transactions (user_id, amount, kind, category, date, description)
@@ -286,9 +410,18 @@ async fn add_transaction(
 
 // route for getting transactions for a user
 async fn get_transactions(
+    AuthenticatedUser { user_id: authenticated_id }: AuthenticatedUser, // extract the user ID from the JWT using our custom extractor
     axum::extract::Path(user_id): axum::extract::Path<uuid::Uuid>,
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<axum::Json<Vec<Transaction>>, (axum::http::StatusCode, String)> {
+
+    // verify that the user ID in the path matches the authenticated user ID from the JWT
+    if user_id != authenticated_id {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "User ID in path does not match authenticated user".to_string(),
+        ));
+    }
 
     // fetch all the users transactions from the database
     let transactions = sqlx::query!(
@@ -323,9 +456,18 @@ async fn get_transactions(
 
 // route for creating/updating a budget (upsert)
 async fn upsert_budget(
+    AuthenticatedUser { user_id }: AuthenticatedUser,
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Json(budget): axum::extract::Json<Budget>
 ) -> Result<axum::http::StatusCode, (axum::http::StatusCode, String)> {
+
+    // verify that the user ID in the budget matches the authenticated user ID from the JWT
+    if budget.user_id != user_id {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "User ID in budget does not match authenticated user".to_string(),
+        ));
+    }
 
     // insert the budget into the database (or update if it already exists)
     sqlx::query!(
@@ -348,10 +490,19 @@ async fn upsert_budget(
 
 // route for getting budgets for a user (optionally filtered by month)
 async fn get_budgets(
+    AuthenticatedUser { user_id: authenticated_id }: AuthenticatedUser,
     axum::extract::Path(user_id): axum::extract::Path<uuid::Uuid>,
     axum::extract::Query(query): axum::extract::Query<BudgetQuery>,
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<axum::Json<Vec<Budget>>, (axum::http::StatusCode, String)> {
+
+    // verify that the user ID in the path matches the authenticated user ID from the JWT
+    if user_id != authenticated_id {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "User ID in path does not match authenticated user".to_string(),
+        ));
+    }
 
     let result: Vec<Budget> = if let Some(month) = query.month {
         // fetch budgets for a specific month
@@ -405,12 +556,21 @@ async fn get_budgets(
 
 // route for getting budget progress for a user (budget vs spent) for a month
 async fn get_budget_progress(
+    AuthenticatedUser { user_id: authenticated_id }: AuthenticatedUser,
     axum::extract::Path(user_id): axum::extract::Path<uuid::Uuid>,
     axum::extract::Query(query): axum::extract::Query<BudgetQuery>,
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Result<axum::Json<Vec<BudgetProgress>>, (axum::http::StatusCode, String)> {
 
     use chrono::Datelike;
+
+    // verify that the user ID in the path matches the authenticated user ID from the JWT
+    if user_id != authenticated_id {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "User ID in path does not match authenticated user".to_string(),
+        ));
+    }
 
     // default to current month if not provided
     let month_start = if let Some(m) = query.month {
@@ -480,7 +640,7 @@ async fn test_handler() -> &'static str {
 
 // test state access
 async fn test_state_handler(
-    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::State(_state): axum::extract::State<AppState>,
 ) -> &'static str {
     // we can access the database pool via state.pool
     "State access is working!"
