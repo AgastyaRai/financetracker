@@ -4,10 +4,12 @@ import type { LoginResponse, Transaction, Budget, BudgetProgress } from "./types
 const API_BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = localStorage.getItem("access_token");
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -43,8 +45,8 @@ export async function addTransaction(tx: Transaction): Promise<void> {
   });
 }
 
-export async function getTransactions(userId: string) {
-  return await request<Transaction[]>(`/transactions/${userId}`, { method: "GET" });
+export async function getTransactions() {
+  return await request<Transaction[]>("/transactions", { method: "GET" });
 }
 
 /* budgets */
@@ -56,12 +58,12 @@ export async function upsertBudget(budget: Budget): Promise<void> {
   });
 }
 
-export async function getBudgets(userId: string, month?: string): Promise<Budget[]> {
+export async function getBudgets(month?: string): Promise<Budget[]> {
   const q = month ? `?month=${encodeURIComponent(month)}` : "";
-  return await request<Budget[]>(`/budgets/${userId}${q}`, { method: "GET" });
+  return await request<Budget[]>(`/budgets${q}`, { method: "GET" });
 }
 
-export async function getBudgetProgress(userId: string, month?: string): Promise<BudgetProgress[]> {
+export async function getBudgetProgress(month?: string): Promise<BudgetProgress[]> {
   const q = month ? `?month=${encodeURIComponent(month)}` : "";
-  return await request<BudgetProgress[]>(`/budgets/${userId}/progress${q}`, { method: "GET" });
+  return await request<BudgetProgress[]>(`/budgets/progress${q}`, { method: "GET" });
 }

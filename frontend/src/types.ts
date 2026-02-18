@@ -1,7 +1,6 @@
 export type TransactionKind = "Income" | "Expense";
 
 export type Transaction = {
-  user_id: string;
   amount: string; // Decimal from backend
   kind: TransactionKind;
   category: string | null;
@@ -9,10 +8,12 @@ export type Transaction = {
   description: string | null;
 };
 
-export type LoginResponse = { user_id: string };
+export type LoginResponse = { 
+  user_id: string;
+  access_token: string;
+};
 
 export type Budget = {
-  user_id: string;
   month: string; // "YYYY-MM-01"
   category: string;
   amount: string; // Decimal as string

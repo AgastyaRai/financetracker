@@ -211,7 +211,7 @@ function BarChart({
 
 export default function App() {
   const [mode, setMode] = useState<AuthMode>("login");
-  const [userId, setUserId] = useState<string | null>(() => localStorage.getItem("user_id"));
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!localStorage.getItem("access_token"));
 
   // Auth form state
   const [username, setUsername] = useState("");
@@ -245,10 +245,10 @@ export default function App() {
   const monthStart = useMemo(() => monthInputToMonthStart(selectedMonth), [selectedMonth]);
   const monthEnd = useMemo(() => nextMonthStart(monthStart), [monthStart]);
 
-  async function refreshTransactions(uid: string) {
+  async function refreshTransactions() {
     setLoadingTx(true);
     try {
-      const txs = await getTransactions(uid);
+      const txs = await getTransactions();
       txs.sort((a, b) => b.date.localeCompare(a.date));
       setTransactions(txs);
     } finally {
@@ -256,14 +256,14 @@ export default function App() {
     }
   }
 
-  async function refreshBudgets(uid: string, monthStartStr: string) {
+  async function refreshBudgets(monthStartStr: string) {
     setLoadingBudgets(true);
     try {
-      const bs = await getBudgets(uid, monthStartStr);
+      const bs = await getBudgets(monthStartStr);
       bs.sort((a, b) => a.category.localeCompare(b.category));
       setBudgets(bs);
 
-      const p = await getBudgetProgress(uid, monthStartStr);
+      const p = await getBudgetProgress(monthStartStr);
       p.sort((a, b) => a.category.localeCompare(b.category));
       setProgress(p);
     } finally {
@@ -272,14 +272,14 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!userId) return;
-    refreshTransactions(userId).catch((e) => setStatus(e.message));
-  }, [userId]);
+    if (!isAuthenticated) return;
+    refreshTransactions().catch((e) => setStatus(e.message));
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!userId) return;
-    refreshBudgets(userId, monthStart).catch((e) => setStatus(e.message));
-  }, [userId, monthStart]);
+    if (!isAuthenticated) return;
+    refreshBudgets(monthStart).catch((e) => setStatus(e.message));
+  }, [isAuthenticated, monthStart]);
 
   // Month-filtered transactions for analytics
   const monthTx = useMemo(() => {
@@ -372,8 +372,8 @@ export default function App() {
     setStatus("");
     try {
       const res = await loginUser({ identifier, password });
-      localStorage.setItem("user_id", res.user_id);
-      setUserId(res.user_id);
+      localStorage.setItem("access_token", res.access_token);
+      setIsAuthenticated(true);
       setStatus("");
     } catch (e: any) {
       setStatus(e.message);
@@ -381,14 +381,13 @@ export default function App() {
   }
 
   async function handleAddTransaction() {
-    if (!userId) return;
+    if (!isAuthenticated) return;
     setStatus("");
 
     if (!amount || Number(amount) <= 0) return setStatus("Amount must be > 0");
     if (!date) return setStatus("Date is required");
 
-    const tx: Transaction = {
-      user_id: userId,
+    const tx: Omit<Transaction, "user_id" | "id" | "created_at"> = {
       amount,
       kind,
       category: category.trim() ? category.trim() : null,
@@ -400,23 +399,22 @@ export default function App() {
       await addTransaction(tx);
       setDescription("");
       setStatus("Transaction added successfully.");
-      await refreshTransactions(userId);
-      await refreshBudgets(userId, monthStart);
+      await refreshTransactions();
+      await refreshBudgets(monthStart);
     } catch (e: any) {
       setStatus(e.message);
     }
   }
 
   async function handleSaveBudget() {
-    if (!userId) return;
+    if (!isAuthenticated) return;
     setStatus("");
 
     const cat = budgetCategory.trim();
     if (!cat) return setStatus("Budget category is required");
     if (!budgetAmount || Number(budgetAmount) <= 0) return setStatus("Budget amount must be > 0");
 
-    const b: Budget = {
-      user_id: userId,
+    const b: Omit<Budget, "user_id" | "id" | "created_at"> = {
       month: monthStart,
       category: cat,
       amount: budgetAmount,
@@ -426,15 +424,15 @@ export default function App() {
       await upsertBudget(b);
       setStatus("Budget saved.");
       setBudgetCategory("");
-      await refreshBudgets(userId, monthStart);
+      await refreshBudgets(monthStart);
     } catch (e: any) {
       setStatus(e.message);
     }
   }
 
   function logout() {
-    localStorage.removeItem("user_id");
-    setUserId(null);
+    localStorage.removeItem("access_token");
+    setIsAuthenticated(false);
     setTransactions([]);
     setBudgets([]);
     setProgress([]);
@@ -444,7 +442,7 @@ export default function App() {
 
   /* ------------------------------ UI ------------------------------ */
 
-  if (!userId) {
+  if (!isAuthenticated) {
     return (
       <div className="container">
         <h1>FinanceTracker</h1>

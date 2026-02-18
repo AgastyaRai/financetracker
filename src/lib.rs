@@ -1,8 +1,12 @@
 // this lib.rs makes the binary's public items available for integration tests
-// by simply re-exporting the main module, which contains the app state and build_app function
-// this way, we can import these items in our tests without having to run the whole server or duplicate code
+// by exposing modules and re-exporting public items
 
-#[path = "main.rs"]
-mod main_module;
+pub mod app;
+pub mod auth;
+pub mod handlers;
+pub mod models;
 
-pub use main_module::{AppState, build_app, verify_jwt};
+pub use app::build_app;
+pub use auth::verify_jwt;
+pub use models::AppState;
+
