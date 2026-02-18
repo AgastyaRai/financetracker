@@ -504,7 +504,6 @@ export default function App() {
       <header className="header">
         <h1 style={{ textAlign: "left", fontSize: 48, margin: 0 }}>Dashboard</h1>
         <div className="headerRight">
-          <span className="muted">user_id: {userId.slice(0, 8)}…</span>
           <button onClick={logout}>Logout</button>
         </div>
       </header>
