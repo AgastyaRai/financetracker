@@ -24,9 +24,24 @@ services:
           - 5432:5432
 
 jobs:
-  build:
-
+  backend:
     runs-on: ubuntu-latest
+
+    env:
+      SQLX_OFFLINE: "true"
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financetracker
+      JWT_SECRET: ci-test-secre
+    
+    # set up a Postgres container for our integration tests
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: financetracker
+        ports:
+          - 5432:5432  
 
     steps:
       # pull our repo code
