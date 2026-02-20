@@ -11,6 +11,10 @@ import {
   getBudgetProgress,
 } from "./api";
 
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 type AuthMode = "login" | "register";
 
 function monthInputToMonthStart(monthInput: string) {
@@ -363,8 +367,8 @@ export default function App() {
       setStatus("Registered. Now log in.");
       setMode("login");
       setIdentifier(username);
-    } catch (e: any) {
-      setStatus(e.message);
+    } catch (e: unknown) {
+      setStatus(errorMessage(e));
     }
   }
 
@@ -375,8 +379,8 @@ export default function App() {
       localStorage.setItem("access_token", res.access_token);
       setIsAuthenticated(true);
       setStatus("");
-    } catch (e: any) {
-      setStatus(e.message);
+    } catch (e: unknown) {
+      setStatus(errorMessage(e));
     }
   }
 
@@ -401,8 +405,8 @@ export default function App() {
       setStatus("Transaction added successfully.");
       await refreshTransactions();
       await refreshBudgets(monthStart);
-    } catch (e: any) {
-      setStatus(e.message);
+    } catch (e: unknown) {
+      setStatus(errorMessage(e));
     }
   }
 
@@ -425,8 +429,8 @@ export default function App() {
       setStatus("Budget saved.");
       setBudgetCategory("");
       await refreshBudgets(monthStart);
-    } catch (e: any) {
-      setStatus(e.message);
+    } catch (e: unknown) {
+      setStatus(errorMessage(e));
     }
   }
 
