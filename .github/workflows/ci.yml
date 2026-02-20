@@ -26,6 +26,12 @@ jobs:
           POSTGRES_DB: financetracker
         ports:
           - 5432:5432
+        # wait until Postgres is actually ready
+        options: >-
+          --health-cmd="pg_isready -U postgres -d financetracker"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
     steps:
       # pull our repo code
@@ -38,18 +44,25 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+          # this action defaults to -D warnings; disable that so warnings aren't errors
+          rustflags: ""
 
       # speeds up builds by caching target/ + deps, not required but worth doing
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      # install sqlx-cli so we can run migrations in CI
+      # install sqlx-cli so we can run `cargo sqlx ...`
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features postgres
 
-      # run migrations so tables exist for integration tests
+      # run migrations so the CI database actually has users/transactions/budgets tables
       - name: Run migrations
         run: cargo sqlx migrate run --source backend/migrations
+
+      # ensure the committed .sqlx query cache matches the current SQL queries in code,
+      # since we're running offline/reliant on our cache
+      - name: Check sqlx cache up to date
+        run: cargo sqlx prepare --check -- --all-targets
 
       # run our tests
       - name: Test
