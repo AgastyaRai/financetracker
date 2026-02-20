@@ -11,11 +11,15 @@ jobs:
   backend:
     runs-on: ubuntu-latest
 
+    # env vars for ALL backend steps
     env:
-      SQLX_OFFLINE: "true"
+      # used by your app/tests + sqlx-cli
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financetracker
-      JWT_SECRET: ci-test-secre
-    
+      JWT_SECRET: ci-test-secret
+
+      # compile-time: force sqlx macros to use committed .sqlx metadata
+      SQLX_OFFLINE: "true"
+
     # set up a Postgres container for our integration tests
     services:
       postgres:
@@ -25,7 +29,13 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: financetracker
         ports:
-          - 5432:5432  
+          - 5432:5432
+        # wait for postgres to be ready before running steps
+        options: >-
+          --health-cmd="pg_isready -U postgres -d financetracker"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
     steps:
       # pull our repo code
@@ -47,15 +57,20 @@ jobs:
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features postgres
 
-      # ensure the committed .sqlx query cache matches the current SQL queries in code, 
-      # since we're running offline/reliant on our cache
+      # IMPORTANT: CI database starts empty -> run migrations to create tables
+      - name: Run migrations
+        run: cargo sqlx migrate run --source backend/migrations
+
+      # ensure the committed .sqlx query cache matches the current SQL queries in code
+      # we temporarily disable SQLX_OFFLINE for this check so sqlx-cli can validate against the live DB schema
       - name: Check sqlx cache up to date
+        env:
+          SQLX_OFFLINE: "false"
         run: cargo sqlx prepare --check -- --all-targets
 
       # run our tests
       - name: Test
         run: cargo test --all
-
 
   frontend:
     runs-on: ubuntu-latest
