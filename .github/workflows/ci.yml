@@ -15,8 +15,9 @@ jobs:
       SQLX_OFFLINE: "true"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financetracker
       JWT_SECRET: ci-test-secret
+      # don't fail CI on warnings (we still see them, they just won't error)
       RUSTFLAGS: "-W warnings"
-    
+
     # set up a Postgres container for our integration tests
     services:
       postgres:
@@ -26,7 +27,13 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: financetracker
         ports:
-          - 5432:5432  
+          - 5432:5432
+        # wait until Postgres is actually ready before running steps
+        options: >-
+          --health-cmd="pg_isready -U postgres -d financetracker"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
 
     steps:
       # pull our repo code
@@ -44,10 +51,22 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      # install sqlx-cli so we can run `cargo sqlx ...`
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres
+
+      # ensure the committed .sqlx query cache matches the current SQL queries in code,
+      # since we're running offline/reliant on our cache
+      - name: Check sqlx cache up to date
+        run: cargo sqlx prepare --check -- --all-targets
+
+      # apply migrations to the CI database (this is what fixes the 500s on /register)
+      - name: Run migrations
+        run: cargo sqlx migrate run --source backend/migrations
+
       # run our tests
       - name: Test
         run: cargo test --all
-
 
   frontend:
     runs-on: ubuntu-latest
