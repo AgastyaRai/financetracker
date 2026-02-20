@@ -15,6 +15,7 @@ jobs:
       SQLX_OFFLINE: "true"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financetracker
       JWT_SECRET: ci-test-secret
+      RUSTFLAGS: "-W warnings"
     
     # set up a Postgres container for our integration tests
     services:
