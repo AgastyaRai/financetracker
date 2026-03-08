@@ -6,6 +6,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::*;
+use crate::embeddings::*;
 
 /* user information */
 
@@ -113,8 +114,8 @@ pub(crate) async fn add_transaction(
     };
 
     // insert the transaction into the database
-    sqlx::query!("INSERT into transactions (user_id, amount, kind, category, date, description)
-        VALUES ($1, $2, $3, $4, $5, $6)",
+    let inserted_transaction = sqlx::query!("INSERT into transactions (user_id, amount, kind, category, date, description)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
         auth.user_id,
         req.amount,
         transaction_type,
@@ -122,9 +123,19 @@ pub(crate) async fn add_transaction(
         req.date,
         req.description
     )
-    .execute(&state.pool)
+    .fetch_one(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let transaction_id = inserted_transaction.id;
+
+    // now we call our embedding generation function to generate an embedding for this transaction
+    let embedding_text = req.transaction_string_embedding();
+
+    let embedding = generate_transaction_embedding(&state, &embedding_text).await?;
+
+    // store the embedding in the database linked to this transaction
+    store_transaction_embedding(&state, transaction_id, auth.user_id, &embedding_text, embedding).await?;
 
     Ok(axum::http::StatusCode::CREATED)
 }

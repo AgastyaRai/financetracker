@@ -9,6 +9,10 @@ pub struct AppState {
     pub pool: sqlx::PgPool,
     // jwt_secret: String, secret key for signing JWTs
     pub jwt_secret: String,
+    // openai api key for generating embeddings
+    pub openai_api_key: String,
+    // reusable http client for outbound API calls
+    pub http_client: reqwest::Client,
 }
 
 // struct for user registration
@@ -103,6 +107,39 @@ pub(crate) struct Claims {
 pub(crate) struct AuthenticatedUser {
     pub user_id: uuid::Uuid,
 }
+
+// struct for transaction embedding
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct EmbeddingRequest<'a> {
+    pub input: &'a str, // we pass by reference, using lifetime 'a, keeping the referenced string alive long enouhh
+    pub model: &'a str,
+    pub encoding_format: &'a str,
+}
+
+// struct for transaction embedding response from OpenAI API
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct EmbeddingResponse {
+    pub data: Vec<EmbeddingData>,
+    pub model: String,
+    pub object: String, // should be "list"
+    pub usage: EmbeddingUsage,
+}
+
+// each entry in the data array contains an embedding vector and its metadata
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct EmbeddingData {
+    pub embedding: Vec<f32>, // the embedding vector as an array of floats (according to our encoding_format in the request
+    pub index: i32,
+    pub object: String, // should be "embedding"
+}
+
+// the usage field in the response contains token use information
+#[derive(serde::Serialize, serde::Deserialize)]
+pub (crate) struct EmbeddingUsage {
+    pub prompt_tokens: i32,
+    pub total_tokens: i32,
+}
+
 
 /* constants */
 

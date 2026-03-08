@@ -14,6 +14,12 @@ async fn main() {
     // set up the JWT secret key (for signing JWTs)
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
 
+    // set up the OpenAI API key (for generating embeddings)
+    let openai_api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
+
+    // set up a reusable HTTP client for outbound API calls (like to OpenAI)
+    let http_client = reqwest::Client::new();
+
     // debugging
     // print only host:port/path/query (everything after the last '@')
     if let Some(i) = db_url.rfind('@') {
@@ -53,7 +59,7 @@ async fn main() {
 
 
     // set up the shared state
-    let state = AppState { pool, jwt_secret };
+    let state = AppState { pool, jwt_secret, openai_api_key, http_client };
 
     // set up the router with the state
     let app = build_app(state);

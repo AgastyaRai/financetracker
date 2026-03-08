@@ -3,6 +3,13 @@ import type { LoginResponse, Transaction, Budget, BudgetProgress } from "./types
 // If using Vite proxy, keep API_BASE = "/api"
 const API_BASE = "/api";
 
+// Logout callback - will be set by App component
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedCallback(callback: () => void) {
+  onUnauthorized = callback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("access_token");
   const res = await fetch(`${API_BASE}${path}`, {
@@ -13,6 +20,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
+
+  // Handle 401 Unauthorized - session expired or invalid token
+  if (res.status === 401) {
+    // Clear auth data
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user_id");
+    
+    // Trigger logout callback
+    if (onUnauthorized) {
+      onUnauthorized();
+    }
+    
+    throw new Error("Session expired. Please log in again.");
+  }
 
   if (!res.ok) {
     const msg = await res.text().catch(() => "");

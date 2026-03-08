@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import "./App.css";
 import type { Transaction, TransactionKind, Budget, BudgetProgress } from "./types";
 import {
@@ -9,6 +9,7 @@ import {
   upsertBudget,
   getBudgets,
   getBudgetProgress,
+  setUnauthorizedCallback,
 } from "./api";
 
 function errorMessage(e: unknown): string {
@@ -213,9 +214,29 @@ function BarChart({
 
 /* ------------------------------ App ------------------------------ */
 
+// Helper function to decode JWT and extract expiry
+function parseJwtExpiry(token: string): number | null {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    const payload = JSON.parse(jsonPayload);
+    return payload.exp ? payload.exp * 1000 : null; // Convert to milliseconds
+  } catch (e) {
+    console.error('Failed to parse JWT:', e);
+    return null;
+  }
+}
+
 export default function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!localStorage.getItem("access_token"));
+  const logoutTimerRef = useRef<number | null>(null);
 
   // Auth form state
   const [username, setUsername] = useState("");
@@ -245,6 +266,68 @@ export default function App() {
   const [loadingBudgets, setLoadingBudgets] = useState(false);
 
   const [status, setStatus] = useState<string>("");
+
+  // Logout function - clear all auth state
+  const logout = useCallback(() => {
+    // Clear any existing logout timer
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    }
+    
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user_id");
+    setIsAuthenticated(false);
+    setTransactions([]);
+    setBudgets([]);
+    setProgress([]);
+    setPassword("");
+    setStatus("");
+  }, []);
+
+  // Set up 401 handler on mount
+  useEffect(() => {
+    setUnauthorizedCallback(logout);
+  }, [logout]);
+
+  // Set up auto-logout timer on mount if already authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      const token = localStorage.getItem("access_token");
+      if (token) {
+        setupAutoLogout(token);
+      }
+    }
+  }, []); // Run once on mount
+
+  // Set up auto-logout timer based on JWT expiry
+  const setupAutoLogout = useCallback((token: string) => {
+    const expiryTime = parseJwtExpiry(token);
+    if (!expiryTime) return;
+
+    const now = Date.now();
+    const timeUntilExpiry = expiryTime - now;
+
+    // If already expired, logout immediately
+    if (timeUntilExpiry <= 0) {
+      logout();
+      return;
+    }
+
+    // Clear any existing timer
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+    }
+
+    // Set up auto-logout slightly before expiry (30 seconds early)
+    const logoutBuffer = 30000; // 30 seconds
+    const timeUntilLogout = Math.max(0, timeUntilExpiry - logoutBuffer);
+
+    logoutTimerRef.current = window.setTimeout(() => {
+      setStatus("Session expired. Please log in again.");
+      logout();
+    }, timeUntilLogout);
+  }, [logout]);
 
   const monthStart = useMemo(() => monthInputToMonthStart(selectedMonth), [selectedMonth]);
   const monthEnd = useMemo(() => nextMonthStart(monthStart), [monthStart]);
@@ -377,6 +460,11 @@ export default function App() {
     try {
       const res = await loginUser({ identifier, password });
       localStorage.setItem("access_token", res.access_token);
+      localStorage.setItem("user_id", res.user_id);
+      
+      // Set up auto-logout timer based on JWT expiry
+      setupAutoLogout(res.access_token);
+      
       setIsAuthenticated(true);
       setStatus("");
     } catch (e: unknown) {
@@ -434,15 +522,7 @@ export default function App() {
     }
   }
 
-  function logout() {
-    localStorage.removeItem("access_token");
-    setIsAuthenticated(false);
-    setTransactions([]);
-    setBudgets([]);
-    setProgress([]);
-    setPassword("");
-    setStatus("");
-  }
+
 
   /* ------------------------------ UI ------------------------------ */
 

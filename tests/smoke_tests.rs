@@ -35,6 +35,8 @@ mod tests {
         let state = AppState {
             pool,
             jwt_secret: "test_secret".to_string(),
+            openai_api_key: "test_openai_key".to_string(),
+            http_client: reqwest::Client::new(),
         };
 
         // build the app router with the state
