@@ -15,6 +15,7 @@ jobs:
       SQLX_OFFLINE: "true"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financetracker
       JWT_SECRET: ci-test-secret
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     # set up a Postgres container for our integration tests
     services:
