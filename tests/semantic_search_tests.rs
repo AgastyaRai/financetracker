@@ -5,8 +5,15 @@ use http_body_util::BodyExt;
 use financetracker::{build_app, Transaction};
 
 #[derive(serde::Deserialize)]
+struct SemanticTransaction {
+    transaction: Transaction,
+    #[allow(dead_code)]
+    similarity_score: f64,
+}
+
+#[derive(serde::Deserialize)]
 struct SemanticSearchResult {
-    transactions: Vec<Transaction>,
+    transactions: Vec<SemanticTransaction>,
     #[allow(dead_code)]
     summary: Option<String>,
 }
@@ -89,7 +96,7 @@ mod semantic_search_tests {
         let results = result.transactions;
 
         // the most relevant transaction (the Uber one) should be the first result returned
-        let first_result_description = results[0].description.as_deref().unwrap_or("");
+        let first_result_description = results[0].transaction.description.as_deref().unwrap_or("");
 
         assert_eq!(first_result_description, "Uber ride home from airport");
     }    
@@ -152,7 +159,7 @@ mod semantic_search_tests {
         let result: SemanticSearchResult = serde_json::from_slice(&body_bytes_user1).unwrap();
         let results = result.transactions;
 
-        let descriptions_user1: Vec<&str> = results.iter().map(|t| t.description.as_deref().unwrap_or("")).collect();
+        let descriptions_user1: Vec<&str> = results.iter().map(|t| t.transaction.description.as_deref().unwrap_or("")).collect();
 
         // only the first user's transaction should be returned in the search results, even though the second user's transaction is similar, because the search should be user-specific
         assert_eq!(descriptions_user1, vec!["Groceries from NoFrills"]);
@@ -221,7 +228,7 @@ mod semantic_search_tests {
         let results = result.transactions;
 
         // the transaction should now be searchable
-        assert!(results.iter().any(|t| t.description.as_deref() == Some("Uber ride to campus")));
+        assert!(results.iter().any(|t| t.transaction.description.as_deref() == Some("Uber ride to campus")));
 
         // and the missing embedding row should have been created
         let stored_embedding = sqlx::query!(

@@ -11,6 +11,13 @@ use crate::models::*;
 use crate::embeddings::*;
 use crate::ai::generate_semantic_search_summary;
 
+/* constants */
+
+// maximum number of results to return for semantic search
+const MAX_SEARCH_RESULTS: i32 = 50; 
+// minimum similarity (cosine distance) for search results, to filter out results that are completely irrelevant
+const MAX_COSINE_DISTANCE: f32 = 0.77; // corresponds to a cosine similarity of 0.23
+
 /* user information */
 
 // route for user registration
@@ -290,6 +297,7 @@ pub(crate) async fn get_budget_progress(
     let next_month_start = chrono::NaiveDate::from_ymd_opt(ny, nm, 1).unwrap();
 
     // join budgets with transactions to compute "spent" per category (expenses only)
+    // we left join transactions to  include categories with a budget but no expenses (spent = 0)
     let rows = sqlx::query!(
         "SELECT
             b.category as \"category!\",
@@ -389,8 +397,8 @@ pub(crate) async fn semantic_transaction_search(
     // convert the search query into an embedding
     let search_embedding = generate_transaction_embedding(&state, &req.query).await?;
 
-    // we extract the limit parameter from the query, defaulting to 10 if not provided and clamping at 50
-    let amount = req.limit.unwrap_or(10).clamp(1, 50);
+    // we extract the limit parameter from the query, defaulting to 10 if not provided and clamping at MAX_SEARCH_RESULTS
+    let amount = req.limit.unwrap_or(10).clamp(1, MAX_SEARCH_RESULTS);
 
     // now we perform a similarity search in the database using the pgvector extension
     
@@ -405,22 +413,27 @@ pub(crate) async fn semantic_transaction_search(
      // in pgvector, we rank by cosine similarity using the <=> operator
      // this specifically calculates cosine distance, which is 1 - cosine similarity, so smaller values are more similar
      // therefore we order by this value ascending to get the most similar results first
+    
+    // we additionally filter results by a maximum cosine distance threshold to avoid returning completely irrelevant results,
+    // and we limit the number of results returned based on user input (defaulting to 10, max 50)
     let rows = sqlx::query(
-        "SELECT t.user_id, t.amount, t.kind, t.category, t.date, t.description
+        "SELECT t.user_id, t.amount, t.kind, t.category, t.date, t.description,
+                    1.0 - (embed.embedding <=> $2) as similarity_score
         FROM transaction_embeddings embed
         JOIN transactions t ON t.id = embed.transaction_id
-        WHERE embed.user_id = $1
+        WHERE embed.user_id = $1 AND embed.embedding <=> $2 < $3
         ORDER BY embed.embedding <=> $2
-        LIMIT $3"
+        LIMIT $4"
     )
     .bind(auth.user_id)
     .bind(Vector::from(search_embedding))
+    .bind(MAX_COSINE_DISTANCE)
     .bind(amount as i64)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let transactions: Vec<Transaction> = rows
+    let semanticTransactions: Vec<SemanticTransaction> = rows
         .into_iter()
         .map(|row| {
             let kind_str: String = row.get("kind");
@@ -430,17 +443,22 @@ pub(crate) async fn semantic_transaction_search(
                 _ => TransactionKind::Expense,
             };
 
-            Transaction {
+
+            let transaction = Transaction {
                 user_id: row.get("user_id"),
                 amount: row.get("amount"),
                 kind,
                 category: row.get("category"),
                 date: row.get("date"),
                 description: row.get("description"),
+            };
+
+            SemanticTransaction {
+                transaction,
+                similarity_score: row.get("similarity_score"),
             }
         })
         .collect();
-
 
     // OPTIONAL: depending on the user's preference, we also choose to generate an AI summary
     // of the search results using the OpenAI API, returning this summary along with
@@ -450,12 +468,14 @@ pub(crate) async fn semantic_transaction_search(
         
         // if the user didn't request a summary, we just return the search results with no summary
         let result = SemanticSearchResult {
-            transactions,
+            transactions: semanticTransactions,
             summary: None,
         };
 
         return Ok(axum::Json(result));
     }
+
+    let transactions : Vec<Transaction> = semanticTransactions.iter().map(|st| st.transaction.clone()).collect();
 
     // the user wants a summary. we'll be using the 4o-mini model for this, mainly because of the price,
     // and because we don't need a very long context window for this summary, since it's just
@@ -463,7 +483,7 @@ pub(crate) async fn semantic_transaction_search(
     let summary = generate_semantic_search_summary(&state, &req.query, &transactions).await?;    
 
     let result: SemanticSearchResult = SemanticSearchResult {
-        transactions,
+        transactions: semanticTransactions,
         summary: Some(summary),
     };
 

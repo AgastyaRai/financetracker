@@ -26,7 +26,12 @@ export type BudgetProgress = {
   remaining: string;
 };
 
+export type SemanticTransaction = {
+  transaction: Transaction;
+  similarity_score: number;
+};
+
 export type SemanticSearchResult = {
-  transactions: Transaction[];
+  transactions: SemanticTransaction[];
   summary: string | null;
 };

@@ -89,7 +89,11 @@ export async function getBudgetProgress(month?: string): Promise<BudgetProgress[
   return await request<BudgetProgress[]>(`/budgets/progress${q}`, { method: "GET" });
 }
 
-export async function semanticSearchTransactions(input: { query: string; limit?: number; summary?: boolean }): Promise<SemanticSearchResult> {
+export async function semanticSearchTransactions(input: {
+  query: string;
+  limit?: number;
+  summary?: boolean;
+}): Promise<SemanticSearchResult> {
   return await request<SemanticSearchResult>("/transactions/search/semantic", {
     method: "POST",
     body: JSON.stringify(input),

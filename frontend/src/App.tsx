@@ -251,10 +251,6 @@ export default function App() {
   // Transactions
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
-  const [semanticQuery, setSemanticQuery] = useState("");
-  const [semanticResults, setSemanticResults] = useState<SemanticSearchResult | null>(null);
-  const [searchingSemantic, setSearchingSemantic] = useState(false);
-  const [includeSummary, setIncludeSummary] = useState(false);
 
   // Add transaction form state
   const [amount, setAmount] = useState("12.34");
@@ -269,6 +265,13 @@ export default function App() {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [progress, setProgress] = useState<BudgetProgress[]>([]);
   const [loadingBudgets, setLoadingBudgets] = useState(false);
+
+  // Semantic search
+  const [semanticQuery, setSemanticQuery] = useState("");
+  const [semanticLimit, setSemanticLimit] = useState(10);
+  const [includeSummary, setIncludeSummary] = useState(false);
+  const [semanticResults, setSemanticResults] = useState<SemanticSearchResult | null>(null);
+  const [searchingSemantic, setSearchingSemantic] = useState(false);
 
   const [status, setStatus] = useState<string>("");
 
@@ -503,33 +506,6 @@ export default function App() {
     }
   }
 
-  async function handleSemanticSearch() {
-    if (!isAuthenticated) return;
-    const query = semanticQuery.trim();
-
-    if (!query) {
-      setSemanticResults(null);
-      return;
-    }
-
-    setSearchingSemantic(true);
-    setStatus("");
-
-    try {
-      const results = await semanticSearchTransactions({ query, limit: 10, summary: includeSummary });
-      setSemanticResults(results);
-    } catch (e: unknown) {
-      setStatus(errorMessage(e));
-    } finally {
-      setSearchingSemantic(false);
-    }
-  }
-
-  function clearSemanticSearch() {
-    setSemanticQuery("");
-    setSemanticResults(null);
-  }
-
   async function handleSaveBudget() {
     if (!isAuthenticated) return;
     setStatus("");
@@ -556,7 +532,37 @@ export default function App() {
 
 
 
-  const shownTransactions = semanticResults ? semanticResults.transactions : transactions;
+  async function handleSemanticSearch() {
+    if (!isAuthenticated) return;
+
+    const query = semanticQuery.trim();
+
+    if (!query) {
+      setSemanticResults(null);
+      return;
+    }
+
+    setSearchingSemantic(true);
+    setStatus("");
+
+    try {
+      const results = await semanticSearchTransactions({
+        query,
+        limit: semanticLimit,
+        summary: includeSummary,
+      });
+      setSemanticResults(results);
+    } catch (e: unknown) {
+      setStatus(errorMessage(e));
+    } finally {
+      setSearchingSemantic(false);
+    }
+  }
+
+  function clearSemanticSearch() {
+    setSemanticQuery("");
+    setSemanticResults(null);
+  }
 
   /* ------------------------------ UI ------------------------------ */
 
@@ -614,6 +620,8 @@ export default function App() {
 
   const totalBudget = progress.reduce((s, p) => s + Number(p.budget_amount || 0), 0);
   const totalSpent = progress.reduce((s, p) => s + Number(p.spent || 0), 0);
+
+  const shownSemanticTransactions = semanticResults?.transactions ?? null;
 
   return (
     <div className="container">
@@ -850,13 +858,26 @@ export default function App() {
       <div className="card">
         <h2>Transactions</h2>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <input
             value={semanticQuery}
             onChange={(e) => setSemanticQuery(e.target.value)}
             placeholder="Search transactions semantically (e.g. uber, groceries, ride home)"
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 260 }}
           />
+
+          <input
+            type="number"
+            min={1}
+            max={50}
+            value={semanticLimit}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              setSemanticLimit(Number.isFinite(value) ? value : 10);
+            }}
+            style={{ width: 90 }}
+          />
+
           <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <input
               type="checkbox"
@@ -865,27 +886,58 @@ export default function App() {
             />
             Summarize with AI
           </label>
+
           <button onClick={handleSemanticSearch} disabled={searchingSemantic}>
             {searchingSemantic ? "Searching..." : "Search"}
           </button>
-          <button onClick={clearSemanticSearch} disabled={!semanticQuery && semanticResults === null}>
+
+          <button onClick={clearSemanticSearch}>
             Clear
           </button>
         </div>
+
         {semanticResults?.summary && (
-          <div className="card">
+          <div className="card" style={{ marginBottom: 14 }}>
             <h3>AI Summary</h3>
             <p>{semanticResults.summary}</p>
           </div>
         )}
 
-        {loadingTx ? (
+        {shownSemanticTransactions ? (
+          shownSemanticTransactions.length === 0 ? (
+            <p className="muted">No matching transactions found.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Kind</th>
+                  <th>Category</th>
+                  <th>Description</th>
+                  <th>Similarity</th>
+                  <th style={{ textAlign: "right" }}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shownSemanticTransactions.map((match, idx) => (
+                  <tr key={idx}>
+                    <td>{match.transaction.date}</td>
+                    <td>{match.transaction.kind}</td>
+                    <td>{match.transaction.category ?? "-"}</td>
+                    <td>{match.transaction.description ?? "-"}</td>
+                    <td>{(match.similarity_score * 100).toFixed(1)}%</td>
+                    <td style={{ textAlign: "right" }}>
+                      {money(Number(match.transaction.amount))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )
+        ) : loadingTx ? (
           <p className="muted">Loading…</p>
-        ) : shownTransactions.length === 0 ? (
-          <p className="muted">
-            {semanticResults ? "No matching transactions found." : "No transactions yet."}
-
-          </p>
+        ) : transactions.length === 0 ? (
+          <p className="muted">No transactions yet.</p>
         ) : (
           <table>
             <thead>
@@ -898,7 +950,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {shownTransactions.map((t, idx) => (
+              {transactions.map((t, idx) => (
                 <tr key={idx}>
                   <td>{t.date}</td>
                   <td>{t.kind}</td>

@@ -37,7 +37,7 @@ pub(crate) struct LoginResponse {
 }
 
 // enum for transaction kind
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub(crate) enum TransactionKind {
     Income,
     Expense,
@@ -54,7 +54,7 @@ pub(crate) struct AddTransactionRequest {
 }
 
 // struct for transaction response
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Transaction {
     pub user_id: uuid::Uuid,
     pub amount: Decimal,
@@ -151,8 +151,15 @@ pub(crate) struct SemanticSearchRequest {
 // struct for semantic search result
 #[derive(serde::Serialize)]
 pub(crate) struct SemanticSearchResult {
-    pub transactions: Vec<Transaction>, // the matching transactions returned by the search
+    pub transactions: Vec<SemanticTransaction>, // the matching transactions returned by the search with their similarity scores
     pub summary: Option<String>, // an optional AI-generated summary of the search results, if requested
+}
+
+// struct for semantic search result transactions paired with their similarity scores
+#[derive(serde::Serialize)]
+pub(crate) struct SemanticTransaction {
+    pub transaction: Transaction,
+    pub similarity_score: f64, // the cosine similarity score between the transaction embedding and the search query embedding
 }
 
 /* constants */
