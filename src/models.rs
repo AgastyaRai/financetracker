@@ -54,8 +54,8 @@ pub(crate) struct AddTransactionRequest {
 }
 
 // struct for transaction response
-#[derive(serde::Serialize)]
-pub(crate) struct Transaction {
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Transaction {
     pub user_id: uuid::Uuid,
     pub amount: Decimal,
     pub kind: TransactionKind,
@@ -138,6 +138,13 @@ pub(crate) struct EmbeddingData {
 pub (crate) struct EmbeddingUsage {
     pub prompt_tokens: i32,
     pub total_tokens: i32,
+}
+
+// struct for semantic search query parameters
+#[derive(serde::Deserialize)]
+pub(crate) struct SemanticSearchRequest {
+    pub query: String, // the search query text
+    pub limit: Option<i32>, // optional parameter to specify how many results to return, default to 10 if not provided
 }
 
 

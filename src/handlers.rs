@@ -4,6 +4,8 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::PasswordVerifier;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use std::time::{SystemTime, UNIX_EPOCH};
+use pgvector::Vector;
+use sqlx::Row;
 
 use crate::models::*;
 use crate::embeddings::*;
@@ -326,6 +328,73 @@ pub(crate) async fn get_budget_progress(
         .collect();
 
     Ok(axum::Json(result))
+}
+
+
+
+// route for semantically searching transactions by embedding similarity
+pub(crate) async fn semantic_transaction_search(
+    auth: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Json(req): axum::extract::Json<SemanticSearchRequest>,
+) -> Result<axum::Json<Vec<Transaction>>, (axum::http::StatusCode, String)> {
+
+    // convert the search query into an embedding
+    let search_embedding = generate_transaction_embedding(&state, &req.query).await?;
+
+    // we extract the limit parameter from the query, defaulting to 10 if not provided and clamping at 50
+    let amount = req.limit.unwrap_or(10).clamp(1, 50);
+
+    // now we perform a similarity search in the database using the pgvector extension
+    
+    /* 
+        We use cosine similarity for our search here for a number of reasons, such as
+        direction being more important than magnitude for our use case, but also with
+        our current model, embeddings are normalized to unit length anyways, so cosine
+        similarity is essentially just a (slightly faster) dot product in our case, 
+        which returns the same ranking as Euclidian distance anyways.
+     */
+
+     // in pgvector, we rank by cosine similarity using the <=> operator
+     // this specifically calculates cosine distance, which is 1 - cosine similarity, so smaller values are more similar
+     // therefore we order by this value ascending to get the most similar results first
+    let rows = sqlx::query(
+        "SELECT t.user_id, t.amount, t.kind, t.category, t.date, t.description
+        FROM transaction_embeddings embed
+        JOIN transactions t ON t.id = embed.transaction_id
+        WHERE embed.user_id = $1
+        ORDER BY embed.embedding <=> $2
+        LIMIT $3"
+    )
+    .bind(auth.user_id)
+    .bind(Vector::from(search_embedding))
+    .bind(amount as i64)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let transactions: Vec<Transaction> = rows
+        .into_iter()
+        .map(|row| {
+            let kind_str: String = row.get("kind");
+            let kind = match kind_str.as_str() {
+                "income" => TransactionKind::Income,
+                "expense" => TransactionKind::Expense,
+                _ => TransactionKind::Expense,
+            };
+
+            Transaction {
+                user_id: row.get("user_id"),
+                amount: row.get("amount"),
+                kind,
+                category: row.get("category"),
+                date: row.get("date"),
+                description: row.get("description"),
+            }
+        })
+        .collect();
+
+    Ok(axum::Json(transactions))
 }
 
 

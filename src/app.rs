@@ -36,6 +36,10 @@ pub fn build_app(state: AppState) -> axum::Router {
         .route("/budgets", axum::routing::get(get_budgets))
         .route("/budgets/progress", axum::routing::get(get_budget_progress))
 
+        // semantic search routes
+        .route("/transactions/search/semantic", axum::routing::post(semantic_transaction_search))
+
+
         // layer with CORS for development
         .layer(cors)
         .with_state(state);

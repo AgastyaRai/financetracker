@@ -11,4 +11,5 @@ pub use app::build_app;
 pub use auth::verify_jwt;
 pub use models::AppState;
 pub use embeddings::{generate_transaction_embedding, store_transaction_embedding};
+pub use models::Transaction;
 
