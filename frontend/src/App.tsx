@@ -10,6 +10,7 @@ import {
   getBudgets,
   getBudgetProgress,
   setUnauthorizedCallback,
+  semanticSearchTransactions,
 } from "./api";
 
 function errorMessage(e: unknown): string {
@@ -250,6 +251,9 @@ export default function App() {
   // Transactions
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
+  const [semanticQuery, setSemanticQuery] = useState("");
+  const [semanticResults, setSemanticResults] = useState<Transaction[] | null>(null);
+  const [searchingSemantic, setSearchingSemantic] = useState(false);
 
   // Add transaction form state
   const [amount, setAmount] = useState("12.34");
@@ -498,6 +502,33 @@ export default function App() {
     }
   }
 
+  async function handleSemanticSearch() {
+    if (!isAuthenticated) return;
+    const query = semanticQuery.trim();
+
+    if (!query) {
+      setSemanticResults(null);
+      return;
+    }
+
+    setSearchingSemantic(true);
+    setStatus("");
+
+    try {
+      const results = await semanticSearchTransactions({ query, limit: 10 });
+      setSemanticResults(results);
+    } catch (e: unknown) {
+      setStatus(errorMessage(e));
+    } finally {
+      setSearchingSemantic(false);
+    }
+  }
+
+  function clearSemanticSearch() {
+    setSemanticQuery("");
+    setSemanticResults(null);
+  }
+
   async function handleSaveBudget() {
     if (!isAuthenticated) return;
     setStatus("");
@@ -523,6 +554,8 @@ export default function App() {
   }
 
 
+
+  const shownTransactions = semanticResults ?? transactions;
 
   /* ------------------------------ UI ------------------------------ */
 
@@ -815,10 +848,28 @@ export default function App() {
       {/* 4) TRANSACTIONS LAST */}
       <div className="card">
         <h2>Transactions</h2>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <input
+            value={semanticQuery}
+            onChange={(e) => setSemanticQuery(e.target.value)}
+            placeholder="Search transactions semantically (e.g. uber, groceries, ride home)"
+            style={{ flex: 1 }}
+          />
+          <button onClick={handleSemanticSearch} disabled={searchingSemantic}>
+            {searchingSemantic ? "Searching..." : "Search"}
+          </button>
+          <button onClick={clearSemanticSearch} disabled={!semanticQuery && semanticResults === null}>
+            Clear
+          </button>
+        </div>
+
         {loadingTx ? (
           <p className="muted">Loading…</p>
-        ) : transactions.length === 0 ? (
-          <p className="muted">No transactions yet.</p>
+        ) : shownTransactions.length === 0 ? (
+          <p className="muted">
+            {semanticResults ? "No matching transactions found." : "No transactions yet."}
+          </p>
         ) : (
           <table>
             <thead>
@@ -831,7 +882,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {transactions.map((t, idx) => (
+              {shownTransactions.map((t, idx) => (
                 <tr key={idx}>
                   <td>{t.date}</td>
                   <td>{t.kind}</td>

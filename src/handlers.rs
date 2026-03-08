@@ -339,6 +339,52 @@ pub(crate) async fn semantic_transaction_search(
     axum::extract::Json(req): axum::extract::Json<SemanticSearchRequest>,
 ) -> Result<axum::Json<Vec<Transaction>>, (axum::http::StatusCode, String)> {
 
+    // we take this as an opportunity to perform a backfill of the users transactions who have no entry
+    // in the transaction_embeddings table yet, so we generate and insert embeddings for any such
+    // transactions
+    let missing_rows = sqlx::query(
+        "SELECT t.id, t.user_id, t.kind, t.category, t.description
+         FROM transactions t
+         WHERE t.user_id = $1
+         AND NOT EXISTS (
+            SELECT 1
+            FROM transaction_embeddings e
+            WHERE e.transaction_id = t.id
+         )
+         LIMIT 5"
+    )
+    .bind(auth.user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // now we generate and insert embeddings for these transactions
+    for row in missing_rows {
+        let transaction_id: uuid::Uuid = row.get("id");
+        let user_id: uuid::Uuid = row.get("user_id");
+        let kind_str: String = row.get("kind");
+        let category: Option<String> = row.get("category");
+        let description: Option<String> = row.get("description");
+
+        let transaction_type = match kind_str.as_str() {
+            "income" => "Income",
+            "expense" => "Expense",
+            _ => "Expense",
+        };
+
+        let embedding_text = format!(
+            "kind: {}\n category: {}\n description: {}",
+            transaction_type,
+            category.clone().unwrap_or_else(|| "Uncategorized".to_string()),
+            description.clone().unwrap_or_else(|| "No description".to_string())
+        );
+
+        // if a backfill row fails, we don't want the whole search to fail
+        if let Ok(embedding) = generate_transaction_embedding(&state, &embedding_text).await {
+            let _ = store_transaction_embedding(&state, transaction_id, user_id, &embedding_text, embedding).await;
+        }
+    }
+    
     // convert the search query into an embedding
     let search_embedding = generate_transaction_embedding(&state, &req.query).await?;
 

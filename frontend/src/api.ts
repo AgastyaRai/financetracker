@@ -88,3 +88,10 @@ export async function getBudgetProgress(month?: string): Promise<BudgetProgress[
   const q = month ? `?month=${encodeURIComponent(month)}` : "";
   return await request<BudgetProgress[]>(`/budgets/progress${q}`, { method: "GET" });
 }
+
+export async function semanticSearchTransactions(input: { query: string; limit?: number }): Promise<Transaction[]> {
+  return await request<Transaction[]>("/transactions/search/semantic", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
