@@ -9,6 +9,7 @@ use sqlx::Row;
 
 use crate::models::*;
 use crate::embeddings::*;
+use crate::ai::generate_semantic_search_summary;
 
 /* user information */
 
@@ -337,7 +338,7 @@ pub(crate) async fn semantic_transaction_search(
     auth: AuthenticatedUser,
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Json(req): axum::extract::Json<SemanticSearchRequest>,
-) -> Result<axum::Json<Vec<Transaction>>, (axum::http::StatusCode, String)> {
+) -> Result<axum::Json<SemanticSearchResult>, (axum::http::StatusCode, String)> {
 
     // we take this as an opportunity to perform a backfill of the users transactions who have no entry
     // in the transaction_embeddings table yet, so we generate and insert embeddings for any such
@@ -384,7 +385,7 @@ pub(crate) async fn semantic_transaction_search(
             let _ = store_transaction_embedding(&state, transaction_id, user_id, &embedding_text, embedding).await;
         }
     }
-    
+
     // convert the search query into an embedding
     let search_embedding = generate_transaction_embedding(&state, &req.query).await?;
 
@@ -440,7 +441,33 @@ pub(crate) async fn semantic_transaction_search(
         })
         .collect();
 
-    Ok(axum::Json(transactions))
+
+    // OPTIONAL: depending on the user's preference, we also choose to generate an AI summary
+    // of the search results using the OpenAI API, returning this summary along with
+    // the search results.
+    
+    if !req.summary.unwrap_or(false) {
+        
+        // if the user didn't request a summary, we just return the search results with no summary
+        let result = SemanticSearchResult {
+            transactions,
+            summary: None,
+        };
+
+        return Ok(axum::Json(result));
+    }
+
+    // the user wants a summary. we'll be using the 4o-mini model for this, mainly because of the price,
+    // and because we don't need a very long context window for this summary, since it's just
+    // looking at search results (which we know will be at most 50 anyways) 
+    let summary = generate_semantic_search_summary(&state, &req.query, &transactions).await?;    
+
+    let result: SemanticSearchResult = SemanticSearchResult {
+        transactions,
+        summary: Some(summary),
+    };
+
+    Ok(axum::Json(result))
 }
 
 

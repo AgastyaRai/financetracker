@@ -67,6 +67,20 @@ pub async fn login_test_user(app: &axum::Router, username: &str, password: &str)
     (response.user_id, response.access_token)
 }
 
+// helper function to add a transaction for a user and assert that it was created successfully
+pub async fn add_transaction(app: &axum::Router, access_token: &str, transaction: serde_json::Value) {
+    let transaction_request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/transactions")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Content-Type", "application/json")
+        .body(axum::body::Body::from(transaction.to_string()))
+        .unwrap();
+
+    let transaction_response = app.clone().oneshot(transaction_request).await.unwrap();
+    assert_eq!(transaction_response.status(), axum::http::StatusCode::CREATED);
+}
+
 // helper function to set up app state
 pub async fn setup_app_state() -> AppState {
     // load .env variables from backend/.env (the working directory during tests is the workspace root)

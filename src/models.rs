@@ -145,8 +145,15 @@ pub (crate) struct EmbeddingUsage {
 pub(crate) struct SemanticSearchRequest {
     pub query: String, // the search query text
     pub limit: Option<i32>, // optional parameter to specify how many results to return, default to 10 if not provided
+    pub summary: Option<bool>, // optional parameter to specify whether to return an AI-generated summary of the search results, default to false if not provided
 }
 
+// struct for semantic search result
+#[derive(serde::Serialize)]
+pub(crate) struct SemanticSearchResult {
+    pub transactions: Vec<Transaction>, // the matching transactions returned by the search
+    pub summary: Option<String>, // an optional AI-generated summary of the search results, if requested
+}
 
 /* constants */
 

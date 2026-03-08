@@ -25,3 +25,8 @@ export type BudgetProgress = {
   spent: string;
   remaining: string;
 };
+
+export type SemanticSearchResult = {
+  transactions: Transaction[];
+  summary: string | null;
+};

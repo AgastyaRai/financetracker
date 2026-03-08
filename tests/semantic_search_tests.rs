@@ -4,6 +4,13 @@ use tower::util::ServiceExt;
 use http_body_util::BodyExt;
 use financetracker::{build_app, Transaction};
 
+#[derive(serde::Deserialize)]
+struct SemanticSearchResult {
+    transactions: Vec<Transaction>,
+    #[allow(dead_code)]
+    summary: Option<String>,
+}
+
 // use the test module
 #[cfg(test)]
 mod semantic_search_tests {
@@ -56,16 +63,7 @@ mod semantic_search_tests {
             "description": "Concert tickets"
         });
 
-        let unrelated_transaction_request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/api/transactions")
-            .header("Authorization", format!("Bearer {}", access_token))
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(unrelated_transaction.to_string()))
-            .unwrap();
-
-        let unrelated_transaction_response = app.clone().oneshot(unrelated_transaction_request).await.unwrap();
-        assert_eq!(unrelated_transaction_response.status(), axum::http::StatusCode::CREATED);
+        common::add_transaction(&app, &access_token, unrelated_transaction).await;
 
         // now perform semantic search
         let search_body = serde_json::json!({
@@ -87,7 +85,8 @@ mod semantic_search_tests {
         let body = search_response.into_body().collect().await.unwrap();
         let body_bytes = body.to_bytes();
         
-        let results: Vec<Transaction> = serde_json::from_slice(&body_bytes).unwrap();
+        let result: SemanticSearchResult = serde_json::from_slice(&body_bytes).unwrap();
+        let results = result.transactions;
 
         // the most relevant transaction (the Uber one) should be the first result returned
         let first_result_description = results[0].description.as_deref().unwrap_or("");
@@ -113,16 +112,7 @@ mod semantic_search_tests {
             "description": "Groceries from NoFrills"
         });
 
-        let transaction_user1_request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/api/transactions")
-            .header("Authorization", format!("Bearer {}", access_token1))
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(transaction_user1.to_string()))
-            .unwrap();
-
-        let transaction_user1_response = app.clone().oneshot(transaction_user1_request).await.unwrap();
-        assert_eq!(transaction_user1_response.status(), axum::http::StatusCode::CREATED);
+        common::add_transaction(&app, &access_token1, transaction_user1).await;
 
         // set up and log in a second test user
         let (username2, password2) = common::create_and_register_test_user(&app).await;
@@ -137,16 +127,7 @@ mod semantic_search_tests {
             "description": "Groceries from SaveOn"
         });
 
-        let transaction_user2_request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/api/transactions")
-            .header("Authorization", format!("Bearer {}", access_token2))
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(transaction_user2.to_string()))
-            .unwrap();
-
-        let transaction_user2_response = app.clone().oneshot(transaction_user2_request).await.unwrap();
-        assert_eq!(transaction_user2_response.status(), axum::http::StatusCode::CREATED);
+        common::add_transaction(&app, &access_token2, transaction_user2).await;
 
         // now perform semantic search with the first user, using a query that should match both transactions
         let search_body_user1 = serde_json::json!({
@@ -168,7 +149,8 @@ mod semantic_search_tests {
         let body_user1 = search_response_user1.into_body().collect().await.unwrap();
         let body_bytes_user1 = body_user1.to_bytes();
         
-        let results: Vec<Transaction> = serde_json::from_slice(&body_bytes_user1).unwrap();
+        let result: SemanticSearchResult = serde_json::from_slice(&body_bytes_user1).unwrap();
+        let results = result.transactions;
 
         let descriptions_user1: Vec<&str> = results.iter().map(|t| t.description.as_deref().unwrap_or("")).collect();
 
@@ -176,7 +158,7 @@ mod semantic_search_tests {
         assert_eq!(descriptions_user1, vec!["Groceries from NoFrills"]);
     }
 
-        // test to see if semantic search backfills missing embeddings for this user
+    // test to see if semantic search backfills missing embeddings for this user
     #[tokio::test]
     async fn test_semantic_search_backfills_missing_embeddings() {
         // set up app state and register + log in a test user
@@ -235,7 +217,8 @@ mod semantic_search_tests {
         let body = search_response.into_body().collect().await.unwrap();
         let body_bytes = body.to_bytes();
 
-        let results: Vec<Transaction> = serde_json::from_slice(&body_bytes).unwrap();
+        let result: SemanticSearchResult = serde_json::from_slice(&body_bytes).unwrap();
+        let results = result.transactions;
 
         // the transaction should now be searchable
         assert!(results.iter().any(|t| t.description.as_deref() == Some("Uber ride to campus")));
@@ -256,5 +239,53 @@ mod semantic_search_tests {
             embedding_text,
             "kind: Expense\n category: Transportation\n description: Uber ride to campus"
         );
+    }
+
+    // very general test to see if semantic search summary generation works (just checking that it returns
+    // something since the output is non-deterministic)
+    #[tokio::test]
+    async fn test_semantic_search_summary_generation() {
+        // use helper functions to set up app state, register + log in a test user
+        let state = common::setup_app_state().await;
+        let app = build_app(state.clone());
+        let (username, password) = common::create_and_register_test_user(&app).await;
+        let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
+
+        // add  transaction for this user
+        let transaction = serde_json::json!({
+            "amount": 50.00,
+            "kind": "Expense",
+            "date": "2026-01-25",
+            "category": "Food",
+            "description": "Got dinner at Sushi Mugne"
+        });
+
+        common::add_transaction(&app, &access_token, transaction).await;
+
+        // now perform semantic search with the summary option enabled
+         let search_body = serde_json::json!({
+            "query": "sushi",
+            "limit": 5,
+            "summary": true
+        });
+
+        let search_request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/transactions/search/semantic")
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(search_body.to_string()))
+            .unwrap();
+
+        let search_response = app.clone().oneshot(search_request).await.unwrap();
+        assert_eq!(search_response.status(), axum::http::StatusCode::OK);
+
+        let body = search_response.into_body().collect().await.unwrap();
+        let body_bytes = body.to_bytes();
+
+        let result: SemanticSearchResult = serde_json::from_slice(&body_bytes).unwrap();
+
+        // since the summary is non-deterministic, we just check that it returns something
+        assert!(result.summary.is_some());
     }
 }

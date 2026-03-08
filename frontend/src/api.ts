@@ -1,4 +1,4 @@
-import type { LoginResponse, Transaction, Budget, BudgetProgress } from "./types";
+import type { LoginResponse, Transaction, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 
 // If using Vite proxy, keep API_BASE = "/api"
 const API_BASE = "/api";
@@ -89,8 +89,8 @@ export async function getBudgetProgress(month?: string): Promise<BudgetProgress[
   return await request<BudgetProgress[]>(`/budgets/progress${q}`, { method: "GET" });
 }
 
-export async function semanticSearchTransactions(input: { query: string; limit?: number }): Promise<Transaction[]> {
-  return await request<Transaction[]>("/transactions/search/semantic", {
+export async function semanticSearchTransactions(input: { query: string; limit?: number; summary?: boolean }): Promise<SemanticSearchResult> {
+  return await request<SemanticSearchResult>("/transactions/search/semantic", {
     method: "POST",
     body: JSON.stringify(input),
   });

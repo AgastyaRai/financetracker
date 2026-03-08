@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import "./App.css";
-import type { Transaction, TransactionKind, Budget, BudgetProgress } from "./types";
+import type { Transaction, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 import {
   addTransaction,
   getTransactions,
@@ -252,8 +252,9 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
   const [semanticQuery, setSemanticQuery] = useState("");
-  const [semanticResults, setSemanticResults] = useState<Transaction[] | null>(null);
+  const [semanticResults, setSemanticResults] = useState<SemanticSearchResult | null>(null);
   const [searchingSemantic, setSearchingSemantic] = useState(false);
+  const [includeSummary, setIncludeSummary] = useState(false);
 
   // Add transaction form state
   const [amount, setAmount] = useState("12.34");
@@ -515,7 +516,7 @@ export default function App() {
     setStatus("");
 
     try {
-      const results = await semanticSearchTransactions({ query, limit: 10 });
+      const results = await semanticSearchTransactions({ query, limit: 10, summary: includeSummary });
       setSemanticResults(results);
     } catch (e: unknown) {
       setStatus(errorMessage(e));
@@ -555,7 +556,7 @@ export default function App() {
 
 
 
-  const shownTransactions = semanticResults ?? transactions;
+  const shownTransactions = semanticResults ? semanticResults.transactions : transactions;
 
   /* ------------------------------ UI ------------------------------ */
 
@@ -856,6 +857,14 @@ export default function App() {
             placeholder="Search transactions semantically (e.g. uber, groceries, ride home)"
             style={{ flex: 1 }}
           />
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={includeSummary}
+              onChange={(e) => setIncludeSummary(e.target.checked)}
+            />
+            Summarize with AI
+          </label>
           <button onClick={handleSemanticSearch} disabled={searchingSemantic}>
             {searchingSemantic ? "Searching..." : "Search"}
           </button>
@@ -863,12 +872,19 @@ export default function App() {
             Clear
           </button>
         </div>
+        {semanticResults?.summary && (
+          <div className="card">
+            <h3>AI Summary</h3>
+            <p>{semanticResults.summary}</p>
+          </div>
+        )}
 
         {loadingTx ? (
           <p className="muted">Loading…</p>
         ) : shownTransactions.length === 0 ? (
           <p className="muted">
             {semanticResults ? "No matching transactions found." : "No transactions yet."}
+
           </p>
         ) : (
           <table>
