@@ -2,7 +2,7 @@ use sqlx::postgres::PgPoolOptions;
 
 // import from our library crate
 use financetracker::{AppState, build_app};
-
+ 
 #[tokio::main]
 async fn main() {
     // load in env file
