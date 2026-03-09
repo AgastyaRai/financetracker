@@ -31,7 +31,7 @@ async fn main() {
 
     // create the connection pool, and connect lazily
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(15)
         .connect_lazy(&db_url)
         .expect("Could not create database connection pool");
 
