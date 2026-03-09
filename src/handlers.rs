@@ -16,7 +16,7 @@ use crate::ai::generate_semantic_search_summary;
 // maximum number of results to return for semantic search
 const MAX_SEARCH_RESULTS: i32 = 50; 
 // minimum similarity (cosine distance) for search results, to filter out results that are completely irrelevant
-const MAX_COSINE_DISTANCE: f32 = 0.77; // corresponds to a cosine similarity of 0.23
+const MAX_COSINE_DISTANCE: f32 = 0.70; // corresponds to a cosine similarity of 0.30
 
 /* user information */
 
