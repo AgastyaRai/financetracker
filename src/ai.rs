@@ -16,6 +16,7 @@ pub async fn generate_semantic_search_summary(
 ) -> Result<String, (StatusCode, String)> {
     let mut transaction_records = String::new();
 
+    let mut total_price = rust_decimal::Decimal::ZERO;
     
     for (i, transaction)in transactions.iter().enumerate() {
 
@@ -35,16 +36,20 @@ pub async fn generate_semantic_search_summary(
             transaction.amount
         );
 
+        total_price += transaction.amount;
+
         transaction_records.push_str(&record);
     }
 
     let user_prompt = format!(
         "A user searched their finance transactions with the query: '{}'. \n\n\
          Here are the matching transactions returned by the search: \n{}\n\
+         Here is the net total amount for these transactions: {}.\n\n\
          Write a concise 2-3 sentence summary of what these results show. Do not \
          invent any transactions or numbers that are not present.",
         query,
-        transaction_records
+        transaction_records,
+        total_price
     );
 
     let config = OpenAIConfig::new().with_api_key(state.openai_api_key.clone());

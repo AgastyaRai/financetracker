@@ -1,3 +1,6 @@
+-- enable pgvector extension for vector data types
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- create embeddings table
 CREATE TABLE IF NOT EXISTS transaction_embeddings (
     transaction_id uuid PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE, -- links to transactions
