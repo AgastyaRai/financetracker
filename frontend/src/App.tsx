@@ -268,7 +268,7 @@ export default function App() {
 
   // Semantic search
   const [semanticQuery, setSemanticQuery] = useState("");
-  const [semanticLimit, setSemanticLimit] = useState(10);
+  const [semanticLimit, setSemanticLimit] = useState("10");
   const [includeSummary, setIncludeSummary] = useState(false);
   const [semanticResults, setSemanticResults] = useState<SemanticSearchResult | null>(null);
   const [searchingSemantic, setSearchingSemantic] = useState(false);
@@ -546,9 +546,11 @@ export default function App() {
     setStatus("");
 
     try {
+      const parsedLimit = semanticLimit.trim() === "" ? undefined : Number(semanticLimit);
+
       const results = await semanticSearchTransactions({
         query,
-        limit: semanticLimit,
+        limit: parsedLimit,
         summary: includeSummary,
       });
       setSemanticResults(results);
@@ -871,10 +873,7 @@ export default function App() {
             min={1}
             max={50}
             value={semanticLimit}
-            onChange={(e) => {
-              const value = Number(e.target.value);
-              setSemanticLimit(Number.isFinite(value) ? value : 10);
-            }}
+            onChange={(e) => setSemanticLimit(e.target.value)}
             style={{ width: 90 }}
           />
 
