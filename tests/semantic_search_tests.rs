@@ -41,25 +41,7 @@ mod semantic_search_tests {
             "description": "Uber ride home from airport"
         });
 
-        let uber_transaction_request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/api/transactions")
-            .header("Authorization", format!("Bearer {}", access_token))
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(uber_transaction.to_string()))
-            .unwrap();
-
-        let uber_transaction_response = app.clone().oneshot(uber_transaction_request).await.unwrap();
-
-        // print for debugging
-        let status = uber_transaction_response.status();
-        let body_bytes = uber_transaction_response.into_body().collect().await.unwrap().to_bytes();
-        let body_str = String::from_utf8_lossy(&body_bytes);
-
-        println!("Add Uber transaction status: {}", status);
-        println!("Add Uber transaction body: {}", body_str);
-
-        assert_eq!(status, axum::http::StatusCode::CREATED);
+        common::add_transaction(&app, &access_token, uber_transaction).await;
 
         // now create a completely unrelated transaction
         let unrelated_transaction = serde_json::json!({
