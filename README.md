@@ -49,3 +49,20 @@ Create a `.env` file (or export env vars) with:
 Run migrations:
 ```bash
 cargo sqlx migrate run --source backend/migrations
+```
+
+For local development in this repository, copy the safe example file:
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+```
+
+The backend loads `backend/.env`. Set the following values before starting it:
+
+- `DATABASE_URL` points to the local PostgreSQL database. The provided Docker setup uses host port `5433`.
+- `JWT_SECRET` is a private secret used to sign authentication tokens.
+- `OPENAI_API_KEY` is a private server-side OpenAI API key.
+- `PORT` is optional and defaults to `3000`.
+- `RUN_MIGRATIONS` is optional; when set, the backend applies migrations during startup.
+
+Never commit `backend/.env` or place `OPENAI_API_KEY` in frontend code. Only `backend/.env.example`, which contains placeholder values, should be tracked.

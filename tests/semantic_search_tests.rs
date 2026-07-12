@@ -233,9 +233,10 @@ mod semantic_search_tests {
     // very general test to see if semantic search summary generation works (just checking that it returns
     // something since the output is non-deterministic)
     #[tokio::test]
+    #[ignore = "calls the real OpenAI API"]
     async fn test_semantic_search_summary_generation() {
         // use helper functions to set up app state, register + log in a test user
-        let state = common::setup_app_state().await;
+        let state = common::setup_live_app_state().await;
         let app = build_app(state.clone());
         let (username, password) = common::create_and_register_test_user(&app).await;
         let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;

@@ -13,9 +13,10 @@ mod embedding_tests {
 
     // test the embedding generation function with a sample transaction
     #[tokio::test]
+    #[ignore = "calls the real OpenAI API"]
     async fn test_embedding_generation() {
         // use common helper function to set up app state (also loads .env)
-        let state = common::setup_app_state().await;
+        let state = common::setup_live_app_state().await;
 
         // use helper function to create and register a test user, and get the username and password
         let (username, password) = common::create_and_register_test_user(&build_app(state.clone())).await;

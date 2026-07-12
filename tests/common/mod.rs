@@ -1,8 +1,48 @@
 use financetracker::AppState;
 use financetracker::embeddings::{EmbeddingProvider, OpenAIEmbeddingProvider};
+use async_trait::async_trait;
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::util::ServiceExt;
+
+struct DeterministicEmbeddingProvider;
+
+#[async_trait]
+impl EmbeddingProvider for DeterministicEmbeddingProvider {
+    async fn generate_embedding(
+        &self,
+        _http_client: &reqwest::Client,
+        _openai_api_key: &str,
+        embedding_text: &str,
+    ) -> Result<Vec<f32>, (axum::http::StatusCode, String)> {
+        let embedding_text = embedding_text.to_ascii_lowercase();
+        let matching_dimension = if embedding_text.contains("uber")
+            || embedding_text.contains("transportation")
+            || embedding_text.contains("ride")
+        {
+            0
+        } else if embedding_text.contains("groceries") {
+            1
+        } else if embedding_text.contains("concert")
+            || embedding_text.contains("entertainment")
+        {
+            2
+        } else if embedding_text.contains("food")
+            || embedding_text.contains("dinner")
+            || embedding_text.contains("restaurant")
+            || embedding_text.contains("sushi")
+        {
+            3
+        } else {
+            4
+        };
+
+        let mut embedding = vec![0.0; 1536];
+        embedding[matching_dimension] = 1.0;
+
+        Ok(embedding)
+    }
+}
 
 // helper function to create and register a unique test user and returns the username and password
 pub async fn create_and_register_test_user(app: &axum::Router) -> (String, String) {
@@ -95,6 +135,31 @@ pub async fn add_transaction(app: &axum::Router, access_token: &str, transaction
 
 // helper function to set up app state
 pub async fn setup_app_state() -> AppState {
+    // load .env variables from backend/.env (the working directory during tests is the workspace root)
+    dotenvy::from_filename("backend/.env").ok();
+
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let openai_api_key = "deterministic-provider-does-not-use-an-api-key".to_string();
+    let http_client = reqwest::Client::new();
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .unwrap();
+
+    AppState {
+        pool,
+        jwt_secret: jwt_secret.clone(),
+        openai_api_key: openai_api_key.clone(),
+        http_client,
+        embedding_provider: Arc::new(DeterministicEmbeddingProvider),
+    }
+}
+
+// helper function to set up app state with the real OpenAI embedding provider for explicitly requested live tests
+pub async fn setup_live_app_state() -> AppState {
     // load .env variables from backend/.env (the working directory during tests is the workspace root)
     dotenvy::from_filename("backend/.env").ok();
 
