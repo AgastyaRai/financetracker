@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import "./App.css";
-import type { Transaction, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
+import type { Transaction, TransactionInput, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 import {
   addTransaction,
   getTransactions,
@@ -487,7 +487,7 @@ export default function App() {
     if (!amount || Number(amount) <= 0) return setStatus("Amount must be > 0");
     if (!date) return setStatus("Date is required");
 
-    const tx: Omit<Transaction, "user_id" | "id" | "created_at"> = {
+    const tx: TransactionInput = {
       amount,
       kind,
       category: category.trim() ? category.trim() : null,
@@ -919,8 +919,8 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {shownSemanticTransactions.map((match, idx) => (
-                  <tr key={idx}>
+                {shownSemanticTransactions.map((match) => (
+                  <tr key={match.transaction.id}>
                     <td>{match.transaction.date}</td>
                     <td>{match.transaction.kind}</td>
                     <td>{match.transaction.category ?? "-"}</td>
@@ -950,8 +950,8 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {transactions.map((t, idx) => (
-                <tr key={idx}>
+              {transactions.map((t) => (
+                <tr key={t.id}>
                   <td>{t.date}</td>
                   <td>{t.kind}</td>
                   <td>{t.category ?? "-"}</td>

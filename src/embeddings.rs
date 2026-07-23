@@ -126,6 +126,82 @@ pub async fn generate_transaction_embedding(
         .await
 }
 
+// generated transaction embedding grouped with the semantic fields used to produce it
+pub struct TransactionEmbedding {
+    transaction_type: String,
+    category: Option<String>,
+    description: Option<String>,
+    embedding_text: String,
+    embedding: Vec<f32>,
+}
+
+impl TransactionEmbedding {
+    // derive the canonical text and vector together so callers cannot pair mismatched transaction data
+    pub async fn generate(
+        state: &AppState,
+        transaction_type: &str,
+        category: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<Self, (StatusCode, String)> {
+        let embedding_transaction_type = match transaction_type {
+            "income" => "Income",
+            "expense" => "Expense",
+            _ => "Expense",
+        };
+        let embedding_text = transaction_embedding_text(
+            embedding_transaction_type,
+            category,
+            description,
+        );
+        Self::generate_from_text(
+            state,
+            transaction_type,
+            category,
+            description,
+            embedding_text,
+        )
+        .await
+    }
+
+    pub(crate) async fn generate_from_request(
+        state: &AppState,
+        req: &AddTransactionRequest,
+    ) -> Result<Self, (StatusCode, String)> {
+        let transaction_type = match req.kind {
+            TransactionKind::Income => "income",
+            TransactionKind::Expense => "expense",
+        };
+        let embedding_text = req.transaction_string_embedding();
+
+        Self::generate_from_text(
+            state,
+            transaction_type,
+            req.category.as_deref(),
+            req.description.as_deref(),
+            embedding_text,
+        )
+        .await
+    }
+
+    async fn generate_from_text(
+        state: &AppState,
+        transaction_type: &str,
+        category: Option<&str>,
+        description: Option<&str>,
+        embedding_text: String,
+    ) -> Result<Self, (StatusCode, String)> {
+        let embedding = generate_transaction_embedding(state, &embedding_text).await?;
+
+        Ok(Self {
+            transaction_type: transaction_type.to_string(),
+            category: category.map(str::to_string),
+            description: description.map(str::to_string),
+            embedding_text,
+            embedding,
+        })
+    }
+}
+
 // helper function to store a transaction embedding into the table in the database
 pub async fn store_transaction_embedding(
     state: &AppState,
@@ -147,6 +223,54 @@ pub async fn store_transaction_embedding(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(())
+}
+
+// helper function to store an embedding only if the transaction still matches the fields that were embedded
+pub async fn store_transaction_embedding_if_current(
+    state: &AppState,
+    transaction_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    transaction_embedding: TransactionEmbedding,
+) -> Result<bool, (StatusCode, String)> {
+    let TransactionEmbedding {
+        transaction_type,
+        category,
+        description,
+        embedding_text,
+        embedding,
+    } = transaction_embedding;
+
+    let result = sqlx::query(
+        "WITH current_transaction AS (
+            SELECT id
+            FROM transactions
+            WHERE id = $1
+              AND user_id = $2
+              AND kind = $5
+              AND category IS NOT DISTINCT FROM $6
+              AND description IS NOT DISTINCT FROM $7
+            FOR UPDATE
+        )
+        INSERT INTO transaction_embeddings (transaction_id, user_id, embedding_text, embedding)
+        SELECT $1, $2, $3, $4
+        FROM current_transaction
+        ON CONFLICT (transaction_id) DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            embedding_text = EXCLUDED.embedding_text,
+            embedding = EXCLUDED.embedding"
+    )
+    .bind(transaction_id)
+    .bind(user_id)
+    .bind(&embedding_text)
+    .bind(Vector::from(embedding))
+    .bind(&transaction_type)
+    .bind(category.as_deref())
+    .bind(description.as_deref())
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 // unit test

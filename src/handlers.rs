@@ -2,6 +2,7 @@ use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::SaltString;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::PasswordVerifier;
+use axum::http::StatusCode;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use std::time::{SystemTime, UNIX_EPOCH};
 use pgvector::Vector;
@@ -112,12 +113,53 @@ pub(crate) async fn user_login(
 
 /* transactions */
 
+// semantic fields currently stored for a transaction
+#[derive(sqlx::FromRow, PartialEq)]
+struct TransactionSemanticFields {
+    kind: String,
+    category: Option<String>,
+    description: Option<String>,
+}
+
+// borrowed semantic fields from a transaction request
+// are copied into the same owned structure used for database results
+impl TransactionSemanticFields {
+    fn from_request(req: &AddTransactionRequest) -> Self {
+        let kind = match req.kind {
+            TransactionKind::Income => "income",
+            TransactionKind::Expense => "expense",
+        };
+
+        Self {
+            kind: kind.to_string(),
+            category: req.category.clone(),
+            description: req.description.clone(),
+        }
+    }
+}
+
+// enforce the transaction amount invariant at the API boundary before any database or provider work
+fn validate_transaction_request(
+    req: &AddTransactionRequest,
+) -> Result<(), (StatusCode, String)> {
+    if req.amount <= rust_decimal::Decimal::ZERO {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Amount must be greater than zero".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 // route for adding a transaction
 pub(crate) async fn add_transaction(
     auth: AuthenticatedUser,
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Json(req): axum::extract::Json<AddTransactionRequest>
 ) -> Result<axum::http::StatusCode, (axum::http::StatusCode, String)> {
+
+    validate_transaction_request(&req)?;
 
     // convert the TransactionKind to a string for storage
     let transaction_type = match req.kind {
@@ -142,27 +184,34 @@ pub(crate) async fn add_transaction(
     let transaction_id = inserted_transaction.id;
 
     // now we call our embedding generation function to generate an embedding for this transaction
-    let embedding_text = req.transaction_string_embedding();
-
     // store the embedding in the database linked to this transaction
-    match generate_transaction_embedding(&state, &embedding_text).await {
-        Ok(embedding) => {
-            if let Err((status, error)) = store_transaction_embedding(
+    match TransactionEmbedding::generate_from_request(&state, &req).await {
+        Ok(transaction_embedding) => {
+            match store_transaction_embedding_if_current(
                 &state,
                 transaction_id,
                 auth.user_id,
-                &embedding_text,
-                embedding,
+                transaction_embedding,
             )
             .await
             {
-                tracing::warn!(
-                    transaction_id = %transaction_id,
-                    user_id = %auth.user_id,
-                    status = %status,
-                    error = %error,
-                    "transaction created without a stored embedding; semantic search will retry it"
-                );
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        transaction_id = %transaction_id,
+                        user_id = %auth.user_id,
+                        "transaction changed before its embedding was stored; stale embedding was skipped"
+                    );
+                }
+                Err((status, error)) => {
+                    tracing::warn!(
+                        transaction_id = %transaction_id,
+                        user_id = %auth.user_id,
+                        status = %status,
+                        error = %error,
+                        "transaction created without a stored embedding; semantic search will retry it"
+                    );
+                }
             }
         }
         Err((status, error)) => {
@@ -179,6 +228,146 @@ pub(crate) async fn add_transaction(
     Ok(axum::http::StatusCode::CREATED)
 }
 
+// route for updating a transaction for the authenticated user
+pub(crate) async fn update_transaction(
+    auth: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(transaction_id): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Json(req): axum::extract::Json<AddTransactionRequest>
+) -> Result<StatusCode, (StatusCode, String)> {
+
+    validate_transaction_request(&req)?;
+
+    // convert the TransactionKind to a string for storage
+    let requested_fields = TransactionSemanticFields::from_request(&req);
+
+    let mut database_transaction = state.pool.begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // lock the transaction while checking ownership and whether its semantic fields changed
+    let existing_fields = sqlx::query_as::<_, TransactionSemanticFields>(
+        "SELECT kind, category, description
+         FROM transactions
+         WHERE id = $1 AND user_id = $2
+         FOR UPDATE"
+    )
+    .bind(transaction_id)
+    .bind(auth.user_id)
+    .fetch_optional(&mut *database_transaction)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let Some(existing_fields) = existing_fields else {
+        return Err((StatusCode::NOT_FOUND, "Transaction not found".to_string()));
+    };
+
+    let semantic_fields_changed = requested_fields != existing_fields;
+
+    // update the financial data before making any external provider request
+    sqlx::query(
+        "UPDATE transactions
+         SET amount = $1, kind = $2, category = $3, date = $4, description = $5
+         WHERE id = $6 AND user_id = $7"
+    )
+    .bind(req.amount)
+    .bind(&requested_fields.kind)
+    .bind(requested_fields.category.as_deref())
+    .bind(req.date)
+    .bind(requested_fields.description.as_deref())
+    .bind(transaction_id)
+    .bind(auth.user_id)
+    .execute(&mut *database_transaction)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // remove an outdated embedding in the same transaction as the semantic change
+    if semantic_fields_changed {
+        sqlx::query("DELETE FROM transaction_embeddings WHERE transaction_id = $1")
+            .bind(transaction_id)
+            .execute(&mut *database_transaction)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    database_transaction.commit()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if !semantic_fields_changed {
+        return Ok(StatusCode::OK);
+    }
+
+    // generate the replacement embedding after the transaction has safely committed
+    refresh_transaction_embedding(
+        &state,
+        transaction_id,
+        auth.user_id,
+        &requested_fields,
+    )
+    .await;
+
+    Ok(StatusCode::OK)
+}
+
+// embedding generation is intentionally separate from the database transaction so a slow provider does not hold a row lock
+async fn refresh_transaction_embedding(
+    state: &AppState,
+    transaction_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    semantic_fields: &TransactionSemanticFields,
+) {
+    // a provider failure leaves the embedding missing so semantic search can backfill it later
+    let transaction_embedding = match TransactionEmbedding::generate(
+        state,
+        &semantic_fields.kind,
+        semantic_fields.category.as_deref(),
+        semantic_fields.description.as_deref(),
+    )
+    .await
+    {
+        Ok(transaction_embedding) => transaction_embedding,
+        Err((status, error)) => {
+            tracing::warn!(
+                transaction_id = %transaction_id,
+                user_id = %user_id,
+                status = %status,
+                error = %error,
+                "transaction updated without an embedding; semantic search will retry it"
+            );
+            return;
+        }
+    };
+
+    // the guarded store rejects this result if another update changed the semantic fields while the provider was running
+    match store_transaction_embedding_if_current(
+        state,
+        transaction_id,
+        user_id,
+        transaction_embedding,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                transaction_id = %transaction_id,
+                user_id = %user_id,
+                "transaction changed before its replacement embedding was stored; stale embedding was skipped"
+            );
+        }
+        Err((status, error)) => {
+            tracing::warn!(
+                transaction_id = %transaction_id,
+                user_id = %user_id,
+                status = %status,
+                error = %error,
+                "transaction updated without a stored embedding; semantic search will retry it"
+            );
+        }
+    }
+}
+
 
 // route for getting transactions for authenticated user
 pub(crate) async fn get_transactions(
@@ -188,7 +377,7 @@ pub(crate) async fn get_transactions(
 
     // fetch all the user's transactions from the database
     let transactions = sqlx::query!(
-        "SELECT amount, kind, category, date, description FROM transactions WHERE user_id = $1",
+        "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1",
         auth.user_id
     )
     .fetch_all(&state.pool)
@@ -199,6 +388,7 @@ pub(crate) async fn get_transactions(
     let result: Vec<Transaction> = transactions
         .into_iter()
         .map(|transaction| Transaction {
+            id: transaction.id,
             user_id: auth.user_id,
             amount: transaction.amount,
             kind: match transaction.kind.as_str() {
@@ -420,21 +610,23 @@ pub(crate) async fn semantic_transaction_search(
         let category: Option<String> = row.get("category");
         let description: Option<String> = row.get("description");
 
-        let transaction_type = match kind_str.as_str() {
-            "income" => "Income",
-            "expense" => "Expense",
-            _ => "Expense",
-        };
-
-        let embedding_text = transaction_embedding_text(
-            transaction_type,
+        let transaction_embedding = TransactionEmbedding::generate(
+            &state,
+            &kind_str,
             category.as_deref(),
             description.as_deref(),
-        );
+        )
+        .await;
 
         // if a backfill row fails, we don't want the whole search to fail
-        if let Ok(embedding) = generate_transaction_embedding(&state, &embedding_text).await {
-            let _ = store_transaction_embedding(&state, transaction_id, user_id, &embedding_text, embedding).await;
+        if let Ok(transaction_embedding) = transaction_embedding {
+            let _ = store_transaction_embedding_if_current(
+                &state,
+                transaction_id,
+                user_id,
+                transaction_embedding,
+            )
+            .await;
         }
     }
 
@@ -461,7 +653,7 @@ pub(crate) async fn semantic_transaction_search(
     // we additionally filter results by a maximum cosine distance threshold to avoid returning completely irrelevant results,
     // and we limit the number of results returned based on user input (defaulting to 10, max 50)
     let rows = sqlx::query(
-        "SELECT t.user_id, t.amount, t.kind, t.category, t.date, t.description,
+        "SELECT t.id, t.user_id, t.amount, t.kind, t.category, t.date, t.description,
                     1.0 - (embed.embedding <=> $2) as similarity_score
         FROM transaction_embeddings embed
         JOIN transactions t ON t.id = embed.transaction_id
@@ -489,6 +681,7 @@ pub(crate) async fn semantic_transaction_search(
 
 
             let transaction = Transaction {
+                id: row.get("id"),
                 user_id: row.get("user_id"),
                 amount: row.get("amount"),
                 kind,
