@@ -98,6 +98,11 @@ jobs:
         working-directory: frontend
         run: npm run lint --if-present
 
+      # run our frontend tests
+      - name: Test
+        working-directory: frontend
+        run: npm test
+
       # finally build
       - name: Build
         working-directory: frontend
