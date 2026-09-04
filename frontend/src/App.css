@@ -1,7 +1,7 @@
 .container{
   width: min(1000px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 64px 0 72px;
+  padding: 44px 0 64px;
 }
 
 h1{
@@ -9,6 +9,11 @@ h1{
   font-size: 56px;
   letter-spacing: -0.02em;
   text-align: center;
+}
+
+h2{
+  margin: 0 0 18px;
+  letter-spacing: -0.01em;
 }
 
 .hint{
@@ -21,9 +26,11 @@ h1{
 
 .status{
   margin: 14px 0 0;
-  color: var(--danger);
   text-align: center;
 }
+
+.status.error{ color: var(--danger); }
+.status.success{ color: var(--success); }
 
 .tabs{
   display: flex;
@@ -51,7 +58,7 @@ h1{
   background: linear-gradient(180deg, var(--card2), var(--card));
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 18px;
+  padding: 22px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(10px);
 }
@@ -93,19 +100,36 @@ input:focus, select:focus{
   box-shadow: 0 0 0 3px rgba(124,92,255,0.20);
 }
 
+input[type="checkbox"]{
+  width: auto;
+  padding: 0;
+}
+
 button{
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.14);
-  background: linear-gradient(90deg, rgba(124,92,255,0.70), rgba(34,211,238,0.55));
-  color: #0b0d14;
+  background: linear-gradient(90deg, #684de0, #087487);
+  color: var(--text);
   font-weight: 800;
   padding: 10px 14px;
   cursor: pointer;
-  transition: transform 120ms ease, filter 120ms ease;
+  transition: transform 120ms ease, filter 120ms ease, border-color 120ms ease;
 }
 
 button:hover{ transform: translateY(-1px); filter: brightness(1.05); }
 button:active{ transform: translateY(0px); }
+button:disabled{ cursor: not-allowed; opacity: 0.65; transform: none; }
+button:focus-visible{
+  outline: none;
+  border-color: rgba(255,255,255,0.65);
+  box-shadow: 0 0 0 3px rgba(124,92,255,0.28);
+}
+
+.buttonSecondary{
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  border-color: var(--border);
+}
 
 .fullRow{
   grid-column: 1 / -1;
@@ -117,7 +141,7 @@ button:active{ transform: translateY(0px); }
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 18px;
+  margin-bottom: 22px;
 }
 
 .headerRight{
@@ -126,11 +150,32 @@ button:active{ transform: translateY(0px); }
   align-items: center;
 }
 
+.headerTitle{
+  display: grid;
+  gap: 3px;
+}
+
+.headerTitle h1{
+  margin: 0;
+  font-size: 38px;
+  line-height: 1;
+  text-align: left;
+}
+
+.eyebrow{
+  color: var(--accent2);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .grid{
   display: grid;
   grid-template-columns: 1.2fr 0.8fr;
   gap: 16px;
   margin-bottom: 16px;
+  align-items: start;
 }
 
 .sectionHeader{
@@ -152,6 +197,106 @@ button:active{ transform: translateY(0px); }
   gap: 10px;
 }
 
+.transactionForm{
+  width: 100%;
+  margin: 0;
+  grid-template-columns: 150px minmax(0, 1fr);
+}
+
+.transactionForm .formActions{
+  grid-column: 2;
+  display: grid;
+  gap: 8px;
+}
+
+.transactionForm .formActions button{
+  width: 100%;
+}
+
+.transactionForm .status,
+.budgetForm .status{
+  margin-top: 0;
+}
+
+.summaryHeader{
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+
+.summaryHeader h2{
+  margin: 0;
+}
+
+.summaryMetrics{
+  display: grid;
+  gap: 10px;
+}
+
+.metricTile{
+  display: grid;
+  gap: 5px;
+  padding: 14px 15px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.035);
+}
+
+.metricLabel{
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.metricValue{
+  font-size: 23px;
+  line-height: 1.15;
+}
+
+.metricValue.income{ color: var(--success); }
+.metricValue.expense{ color: var(--danger); }
+
+.dashboardSection{
+  margin-bottom: 16px;
+}
+
+.chartSection{
+  margin-top: 18px;
+}
+
+.chartFrame{
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  background: rgba(0,0,0,0.18);
+}
+
+.emptyState{
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  min-height: 170px;
+  margin-top: 18px;
+  padding: 24px;
+  border: 1px dashed rgba(255,255,255,0.16);
+  border-radius: 14px;
+  background: rgba(0,0,0,0.14);
+  color: var(--muted);
+  text-align: center;
+}
+
+.emptyState strong{
+  color: var(--text);
+  font-size: 16px;
+}
+
+.emptyState.compact{
+  min-height: 110px;
+  margin-top: 0;
+}
+
 .budgetForm .fullRow{
   grid-column: 2;
 }
@@ -164,7 +309,9 @@ button:active{ transform: translateY(0px); }
   .grid{ grid-template-columns: 1fr; }
   .formGrid{ grid-template-columns: 1fr; }
   .formGrid label{ justify-self: start; }
+  .transactionForm .formActions{ grid-column: 1; }
   .budgetForm .fullRow{ grid-column: 1; }
+  .summaryMetrics{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 table{
@@ -172,6 +319,15 @@ table{
   border-collapse: collapse;
   overflow: hidden;
   border-radius: 12px;
+}
+
+.tableScroll{
+  width: 100%;
+  overflow-x: auto;
+}
+
+.tableScroll table{
+  min-width: 620px;
 }
 
 thead th{
@@ -198,6 +354,27 @@ tbody tr:nth-child(odd){
 }
 .summaryRow.strong{
   font-weight: 900;
+}
+
+.formGrid label::after,
+.card.formGrid label::after,
+.summaryRow span:first-child::after{
+  content: none;
+}
+
+@media (max-width: 600px){
+  .container{
+    width: min(100% - 28px, 1000px);
+    padding: 28px 0 48px;
+  }
+
+  .card{ padding: 17px; }
+  .header{ align-items: flex-end; }
+  .headerTitle h1{ font-size: 32px; }
+  .headerRight button{ padding: 8px 12px; }
+  .summaryMetrics{ grid-template-columns: 1fr; }
+  .sectionHeaderControls{ width: 100%; }
+  .sectionHeaderControls input{ max-width: none !important; }
 }
 
 
