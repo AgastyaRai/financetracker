@@ -37,6 +37,7 @@ mod tests {
             jwt_secret: "test_secret".to_string(),
             openai_api_key: "test_openai_key".to_string(),
             http_client: reqwest::Client::new(),
+            embedding_provider: std::sync::Arc::new(financetracker::embeddings::OpenAIEmbeddingProvider),
         };
 
         // build the app router with the state

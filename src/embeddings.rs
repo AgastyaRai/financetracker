@@ -1,6 +1,21 @@
 use crate::models::{AddTransactionRequest, AppState, EmbeddingRequest, TransactionKind};
+use async_trait::async_trait;
 use axum::http::StatusCode;
 use pgvector::Vector;
+
+pub(crate) fn transaction_embedding_text(
+    transaction_type: &str,
+    category: Option<&str>,
+    description: Option<&str>,
+) -> String {
+    let category = category.unwrap_or("Uncategorized");
+    let description = description.unwrap_or("No description");
+
+    format!(
+        "kind: {}\n category: {}\n description: {}",
+        transaction_type, category, description
+    )
+}
 
 impl AddTransactionRequest {
 
@@ -24,22 +39,44 @@ impl AddTransactionRequest {
             TransactionKind::Income => "Income",
         };
         
-        let category = self.category.as_deref().unwrap_or("Uncategorized");
-        let description = self.description.as_deref().unwrap_or("No description");
+        let category = self.category.as_deref();
+        let description = self.description.as_deref();
 
-        let embedding_string = format!(
-            "kind: {}\n category: {}\n description: {}",
-            transaction_type, category, description
-        );
+        let embedding_string = transaction_embedding_text(transaction_type, category, description);
 
         embedding_string
     }
 
 }
 
+#[async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    async fn generate_embedding(
+        &self,
+        http_client: &reqwest::Client,
+        openai_api_key: &str,
+        embedding_text: &str,
+    ) -> Result<Vec<f32>, (StatusCode, String)>;
+}
+
+pub struct OpenAIEmbeddingProvider;
+
+#[async_trait]
+impl EmbeddingProvider for OpenAIEmbeddingProvider {
+    async fn generate_embedding(
+        &self,
+        http_client: &reqwest::Client,
+        openai_api_key: &str,
+        embedding_text: &str,
+    ) -> Result<Vec<f32>, (StatusCode, String)> {
+        generate_openai_embedding(http_client, openai_api_key, embedding_text).await
+    }
+}
+
 // function to generate embeddings from text using OpenAI API
-pub async fn generate_transaction_embedding(
-    state: &AppState,
+async fn generate_openai_embedding(
+    http_client: &reqwest::Client,
+    openai_api_key: &str,
     embedding_text: &str,
 ) -> Result<Vec<f32>, (StatusCode, String)> {
     // openai expects headers Auth Bearer <key> and Content-Type application/json
@@ -50,9 +87,9 @@ pub async fn generate_transaction_embedding(
         encoding_format: "float"
     };
 
-    let response = state.http_client
+    let response = http_client
         .post("https://api.openai.com/v1/embeddings")
-        .bearer_auth(&state.openai_api_key)
+        .bearer_auth(openai_api_key)
         .json(&embedding_request)
         .send()
         .await
@@ -77,6 +114,16 @@ pub async fn generate_transaction_embedding(
         .embedding;
 
     Ok(embedding)
+}
+
+// function used by handlers to generate embeddings with the provider selected in app state
+pub async fn generate_transaction_embedding(
+    state: &AppState,
+    embedding_text: &str,
+) -> Result<Vec<f32>, (StatusCode, String)> {
+    state.embedding_provider
+        .generate_embedding(&state.http_client, &state.openai_api_key, embedding_text)
+        .await
 }
 
 // helper function to store a transaction embedding into the table in the database

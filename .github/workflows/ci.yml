@@ -60,14 +60,18 @@ jobs:
       - name: Run migrations
         run: cargo sqlx migrate run --source backend/migrations
 
+      # fail before any later Cargo command can silently rewrite a stale lockfile
+      - name: Check Cargo lockfile
+        run: cargo check --locked --all-targets
+
       # ensure the committed .sqlx query cache matches the current SQL queries in code,
       # since we're running offline/reliant on our cache
       - name: Check sqlx cache up to date
-        run: cargo sqlx prepare --check -- --all-targets
+        run: cargo sqlx prepare --check -- --all-targets --locked
 
       # run our tests
       - name: Test
-        run: cargo test --all
+        run: cargo test --locked --all
 
   frontend:
     runs-on: ubuntu-latest

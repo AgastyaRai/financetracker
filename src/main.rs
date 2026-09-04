@@ -59,7 +59,7 @@ async fn main() {
 
 
     // set up the shared state
-    let state = AppState { pool, jwt_secret, openai_api_key, http_client };
+    let state = AppState { pool, jwt_secret, openai_api_key, http_client, embedding_provider: std::sync::Arc::new(financetracker::embeddings::OpenAIEmbeddingProvider) };
 
     // set up the router with the state
     let app = build_app(state);

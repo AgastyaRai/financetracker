@@ -15,6 +15,8 @@ use crate::ai::generate_semantic_search_summary;
 
 // maximum number of results to return for semantic search
 const MAX_SEARCH_RESULTS: i32 = 50; 
+// maximum number of characters allowed in a semantic search query
+const MAX_SEARCH_QUERY_LENGTH: usize = 500;
 // minimum similarity (cosine distance) for search results, to filter out results that are completely irrelevant
 const MAX_COSINE_DISTANCE: f32 = 0.70; // corresponds to a cosine similarity of 0.30
 
@@ -142,10 +144,37 @@ pub(crate) async fn add_transaction(
     // now we call our embedding generation function to generate an embedding for this transaction
     let embedding_text = req.transaction_string_embedding();
 
-    let embedding = generate_transaction_embedding(&state, &embedding_text).await?;
-
     // store the embedding in the database linked to this transaction
-    store_transaction_embedding(&state, transaction_id, auth.user_id, &embedding_text, embedding).await?;
+    match generate_transaction_embedding(&state, &embedding_text).await {
+        Ok(embedding) => {
+            if let Err((status, error)) = store_transaction_embedding(
+                &state,
+                transaction_id,
+                auth.user_id,
+                &embedding_text,
+                embedding,
+            )
+            .await
+            {
+                tracing::warn!(
+                    transaction_id = %transaction_id,
+                    user_id = %auth.user_id,
+                    status = %status,
+                    error = %error,
+                    "transaction created without a stored embedding; semantic search will retry it"
+                );
+            }
+        }
+        Err((status, error)) => {
+            tracing::warn!(
+                transaction_id = %transaction_id,
+                user_id = %auth.user_id,
+                status = %status,
+                error = %error,
+                "transaction created without an embedding; semantic search will retry it"
+            );
+        }
+    }
 
     Ok(axum::http::StatusCode::CREATED)
 }
@@ -348,6 +377,22 @@ pub(crate) async fn semantic_transaction_search(
     axum::extract::Json(req): axum::extract::Json<SemanticSearchRequest>,
 ) -> Result<axum::Json<SemanticSearchResult>, (axum::http::StatusCode, String)> {
 
+    let query = req.query.trim();
+
+    if query.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Search query cannot be empty".to_string(),
+        ));
+    }
+
+    if query.chars().count() > MAX_SEARCH_QUERY_LENGTH {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("Search query cannot exceed {} characters", MAX_SEARCH_QUERY_LENGTH),
+        ));
+    }
+
     // we take this as an opportunity to perform a backfill of the users transactions who have no entry
     // in the transaction_embeddings table yet, so we generate and insert embeddings for any such
     // transactions
@@ -381,11 +426,10 @@ pub(crate) async fn semantic_transaction_search(
             _ => "Expense",
         };
 
-        let embedding_text = format!(
-            "kind: {}\n category: {}\n description: {}",
+        let embedding_text = transaction_embedding_text(
             transaction_type,
-            category.clone().unwrap_or_else(|| "Uncategorized".to_string()),
-            description.clone().unwrap_or_else(|| "No description".to_string())
+            category.as_deref(),
+            description.as_deref(),
         );
 
         // if a backfill row fails, we don't want the whole search to fail
@@ -395,7 +439,7 @@ pub(crate) async fn semantic_transaction_search(
     }
 
     // convert the search query into an embedding
-    let search_embedding = generate_transaction_embedding(&state, &req.query).await?;
+    let search_embedding = generate_transaction_embedding(&state, query).await?;
 
     // we extract the limit parameter from the query, defaulting to 10 if not provided and clamping at MAX_SEARCH_RESULTS
     let amount = req.limit.unwrap_or(10).clamp(1, MAX_SEARCH_RESULTS);
@@ -480,7 +524,7 @@ pub(crate) async fn semantic_transaction_search(
     // the user wants a summary. we'll be using the 4o-mini model for this, mainly because of the price,
     // and because we don't need a very long context window for this summary, since it's just
     // looking at search results (which we know will be at most 50 anyways) 
-    let summary = generate_semantic_search_summary(&state, &req.query, &transactions).await?;    
+    let summary = generate_semantic_search_summary(&state, query, &transactions).await?;
 
     let result: SemanticSearchResult = SemanticSearchResult {
         transactions: semanticTransactions,

@@ -864,6 +864,7 @@ export default function App() {
           <input
             value={semanticQuery}
             onChange={(e) => setSemanticQuery(e.target.value)}
+            maxLength={500}
             placeholder="Search transactions semantically (e.g. uber, groceries, ride home)"
             style={{ flex: 1, minWidth: 260 }}
           />
