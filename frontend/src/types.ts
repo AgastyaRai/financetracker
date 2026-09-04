@@ -1,12 +1,15 @@
 export type TransactionKind = "Income" | "Expense";
 
 export type Transaction = {
+  id: string;
   amount: string; // Decimal from backend
   kind: TransactionKind;
   category: string | null;
   date: string; // "YYYY-MM-DD"
   description: string | null;
 };
+
+export type TransactionInput = Omit<Transaction, "id">;
 
 export type LoginResponse = { 
   user_id: string;

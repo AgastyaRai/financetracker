@@ -61,6 +61,7 @@ pub(crate) struct AddTransactionRequest {
 // struct for transaction response
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Transaction {
+    pub id: uuid::Uuid,
     pub user_id: uuid::Uuid,
     pub amount: Decimal,
     pub kind: TransactionKind,

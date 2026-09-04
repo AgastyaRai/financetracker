@@ -1,30 +1,35 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT amount, kind, category, date, description FROM transactions WHERE user_id = $1",
+  "query": "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
         "name": "amount",
         "type_info": "Numeric"
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "kind",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "category",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "date",
         "type_info": "Date"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "description",
         "type_info": "Text"
       }
@@ -37,10 +42,11 @@
     "nullable": [
       false,
       false,
+      false,
       true,
       false,
       true
     ]
   },
-  "hash": "00dccd8e7b853d78f9e647306d37047599fa91566f8905aa5e9ff467e24e1244"
+  "hash": "f2c84b28f167c0157ac333ee783e810028506604d214eb9e384d58735f593fc8"
 }

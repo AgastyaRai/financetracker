@@ -29,13 +29,17 @@ FinanceTracker is a full-stack personal finance web app that lets users register
 - Supabase Postgres (with connection pooler/TLS)
 
 ## API Routes (summary)
+All routes below are served under `/api`.
+
 - `POST /users/register`
 - `POST /users/login`
 - `POST /transactions`
-- `GET  /transactions/:user_id`
+- `GET  /transactions`
+- `PUT  /transactions/:id`
+- `POST /transactions/search/semantic`
 - `POST /budgets` (upsert)
-- `GET  /budgets/:user_id`
-- `GET  /budgets/:user_id/progress`
+- `GET  /budgets`
+- `GET  /budgets/progress`
 - `GET  /test` (development)
 
 ## Local Development

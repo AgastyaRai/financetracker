@@ -1,4 +1,4 @@
-import type { LoginResponse, Transaction, Budget, BudgetProgress, SemanticSearchResult } from "./types";
+import type { LoginResponse, Transaction, TransactionInput, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 
 // If using Vite proxy, keep API_BASE = "/api"
 const API_BASE = "/api";
@@ -59,7 +59,7 @@ export async function loginUser(input: { identifier: string; password: string })
   });
 }
 
-export async function addTransaction(tx: Transaction): Promise<void> {
+export async function addTransaction(tx: TransactionInput): Promise<void> {
   await request<void>("/transactions", {
     method: "POST",
     body: JSON.stringify(tx),
