@@ -15,7 +15,6 @@ jobs:
       SQLX_OFFLINE: "true"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/financetracker
       JWT_SECRET: ci-test-secret
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     # set up a Postgres container for our integration tests
     services:
@@ -70,6 +69,7 @@ jobs:
         run: cargo sqlx prepare --check -- --all-targets --locked
 
       # run our tests
+      # live OpenAI tests are explicitly ignored and can be run manually with cargo test -- --ignored
       - name: Test
         run: cargo test --locked --all
 
