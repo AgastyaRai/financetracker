@@ -684,9 +684,9 @@ export default function App() {
 
       {/* 1) GENERAL CHARTS FIRST */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div className="sectionHeader">
           <h2 style={{ margin: 0 }}>Analytics</h2>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="sectionHeaderControls">
             <span className="muted" style={{ fontWeight: 700 }}>Month</span>
             <input
               type="month"
@@ -699,7 +699,7 @@ export default function App() {
 
         {/* net line chart */}
         <div style={{ marginTop: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+          <div className="sectionHeader baseline">
             <h3 style={{ margin: "0 0 6px" }}>Cumulative net (this month)</h3>
             <span className="muted">
               Income: {money(monthIncomeExpense.income)} · Expense: {money(monthIncomeExpense.expense)} · Net:{" "}
@@ -746,7 +746,7 @@ export default function App() {
 
       {/* 2) BIG BUDGET PROGRESS SECOND */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+        <div className="sectionHeader baseline">
           <h2 style={{ margin: 0 }}>Budget progress</h2>
           <span className="muted">
             Total spent: <b>{money(totalSpent)}</b> · Total budget: <b>{money(totalBudget)}</b>
@@ -815,7 +815,7 @@ export default function App() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h2>Budgets</h2>
 
-        <div className="formGrid" style={{ width: "100%", margin: 0 }}>
+        <div className="formGrid budgetForm">
           <label>Month</label>
           <input type="month" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} />
 

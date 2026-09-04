@@ -115,6 +115,8 @@ button:active{ transform: translateY(0px); }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 18px;
 }
 
@@ -131,10 +133,38 @@ button:active{ transform: translateY(0px); }
   margin-bottom: 16px;
 }
 
+.sectionHeader{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.sectionHeader.baseline{
+  align-items: baseline;
+}
+
+.sectionHeaderControls{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.budgetForm .fullRow{
+  grid-column: 2;
+}
+
+.budgetForm .fullRow button{
+  width: 100%;
+}
+
 @media (max-width: 900px){
   .grid{ grid-template-columns: 1fr; }
   .formGrid{ grid-template-columns: 1fr; }
   .formGrid label{ justify-self: start; }
+  .budgetForm .fullRow{ grid-column: 1; }
 }
 
 table{
