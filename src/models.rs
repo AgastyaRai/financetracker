@@ -1,4 +1,7 @@
 use sqlx::types::Decimal;
+use std::sync::Arc;
+
+use crate::embeddings::EmbeddingProvider;
 
 /* data structures */
 
@@ -13,6 +16,8 @@ pub struct AppState {
     pub openai_api_key: String,
     // reusable http client for outbound API calls
     pub http_client: reqwest::Client,
+    // embedding provider selected by production or test setup
+    pub embedding_provider: Arc<dyn EmbeddingProvider>,
 }
 
 // struct for user registration
@@ -56,6 +61,7 @@ pub(crate) struct AddTransactionRequest {
 // struct for transaction response
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Transaction {
+    pub id: uuid::Uuid,
     pub user_id: uuid::Uuid,
     pub amount: Decimal,
     pub kind: TransactionKind,

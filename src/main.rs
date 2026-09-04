@@ -6,7 +6,7 @@ use financetracker::{AppState, build_app};
 #[tokio::main]
 async fn main() {
     // load in env file
-    dotenvy::dotenv_override().ok();
+    dotenvy::from_filename("backend/.env").ok();
 
     // set up the database connection
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -59,7 +59,7 @@ async fn main() {
 
 
     // set up the shared state
-    let state = AppState { pool, jwt_secret, openai_api_key, http_client };
+    let state = AppState { pool, jwt_secret, openai_api_key, http_client, embedding_provider: std::sync::Arc::new(financetracker::embeddings::OpenAIEmbeddingProvider) };
 
     // set up the router with the state
     let app = build_app(state);
