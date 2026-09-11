@@ -169,7 +169,7 @@ describe("dashboard correctness", () => {
     expect(within(budgetCard as HTMLElement).getByLabelText("Amount")).toHaveAttribute("type", "number");
   });
 
-  it("submits a transaction with Enter", async () => {
+  it("submits an Expense as a negative amount with Enter", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -182,7 +182,29 @@ describe("dashboard correctness", () => {
 
     await waitFor(() => {
       expect(apiMocks.addTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: "12.34", description: "Coffee" }),
+        expect.objectContaining({ amount: "-12.34", kind: "Expense", description: "Coffee" }),
+      );
+    });
+  });
+
+  it("submits an Income as a positive amount with Enter", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const transactionCard = screen.getByRole("heading", { name: "Add transaction" }).closest(".card");
+    expect(transactionCard).not.toBeNull();
+    await user.selectOptions(
+      within(transactionCard as HTMLElement).getByLabelText("Kind"),
+      "Income",
+    );
+    await user.type(
+      within(transactionCard as HTMLElement).getByLabelText("Description (optional)"),
+      "Salary{Enter}",
+    );
+
+    await waitFor(() => {
+      expect(apiMocks.addTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: "12.34", kind: "Income", description: "Salary" }),
       );
     });
   });
@@ -239,7 +261,7 @@ describe("dashboard correctness", () => {
     expect(screen.getAllByDisplayValue(expectedMonth)).toHaveLength(2);
   });
 
-  it("summarizes only transactions from the selected month", async () => {
+  it("uses signed amounts for selected-month totals and plots a positive Expense refund as money in", async () => {
     const now = new Date();
     const selectedMonth = [
       now.getFullYear(),
@@ -264,11 +286,19 @@ describe("dashboard correctness", () => {
         description: null,
       },
       {
-        id: "selected-month-expense",
-        amount: "25.00",
-        kind: "Expense",
+        id: "selected-month-outflow",
+        amount: "-25.00",
+        kind: "Income",
         category: "Food",
         date: `${selectedMonth}-10`,
+        description: null,
+      },
+      {
+        id: "selected-month-refund",
+        amount: "10.00",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-15`,
         description: null,
       },
       {
@@ -285,10 +315,154 @@ describe("dashboard correctness", () => {
 
     const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card");
     expect(summaryCard).not.toBeNull();
-    expect(await within(summaryCard as HTMLElement).findByText("$100.00")).toBeInTheDocument();
+    expect(await within(summaryCard as HTMLElement).findByText("$110.00")).toBeInTheDocument();
     expect(within(summaryCard as HTMLElement).getByText("$25.00")).toBeInTheDocument();
-    expect(within(summaryCard as HTMLElement).getByText("$75.00")).toBeInTheDocument();
+    expect(within(summaryCard as HTMLElement).getByText("$85.00")).toBeInTheDocument();
     expect(within(summaryCard as HTMLElement).getByText(selectedMonthLabel)).toBeInTheDocument();
+
+    const analyticsCard = screen.getByRole("heading", { name: "Analytics" }).closest(".card");
+    expect(analyticsCard).not.toBeNull();
+    expect(analyticsCard).toHaveTextContent(
+      "Money in: $110.00 · Money out: $25.00 · Net: $85.00",
+    );
+
+    const cumulativeNetChart = within(analyticsCard as HTMLElement).getByRole("img", {
+      name: "Cumulative net chart",
+    });
+    const points = cumulativeNetChart.querySelector("polyline")?.getAttribute("points");
+    expect(points).toBeTruthy();
+    const yCoordinates = points!.split(" ").map((point) => Number(point.split(",")[1]));
+    const dayBeforeRefundY = yCoordinates[13];
+    const refundDayY = yCoordinates[14];
+    expect(refundDayY).toBeLessThan(dayBeforeRefundY);
+    expect(
+      within(analyticsCard as HTMLElement).queryByRole("img", {
+        name: "Spending by category chart",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("places the minus sign before the currency symbol for negative amounts", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "coffee-outflow",
+        amount: "-25.00",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "Coffee purchase",
+      },
+    ]);
+
+    render(<App />);
+
+    const transactionRow = (await screen.findByText("Coffee purchase")).closest("tr");
+    expect(transactionRow).not.toBeNull();
+    expect(within(transactionRow as HTMLElement).getByText("-$25.00")).toBeInTheDocument();
+  });
+
+  it("treats cent-precise cancellations as zero in totals and charts", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "first-cent-outflow",
+        amount: "-0.10",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "First cent outflow",
+      },
+      {
+        id: "second-cent-outflow",
+        amount: "-0.20",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "Second cent outflow",
+      },
+      {
+        id: "exact-cent-refund",
+        amount: "0.30",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "Exact cent refund",
+      },
+    ]);
+
+    render(<App />);
+
+    await screen.findByText("Exact cent refund");
+
+    const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card");
+    expect(summaryCard).not.toBeNull();
+    const netTile = within(summaryCard as HTMLElement).getByText("Net").closest(".metricTile");
+    expect(netTile).not.toBeNull();
+    expect(within(netTile as HTMLElement).getByText("$0.00")).toBeInTheDocument();
+    expect(within(netTile as HTMLElement).queryByText("-$0.00")).not.toBeInTheDocument();
+
+    const analyticsCard = screen.getByRole("heading", { name: "Analytics" }).closest(".card");
+    expect(analyticsCard).not.toBeNull();
+    expect(analyticsCard).toHaveTextContent("Net: $0.00");
+    expect(
+      within(analyticsCard as HTMLElement).queryByRole("img", {
+        name: "Spending by category chart",
+      }),
+    ).not.toBeInTheDocument();
+
+    const cumulativeNetChart = within(analyticsCard as HTMLElement).getByRole("img", {
+      name: "Cumulative net chart",
+    });
+    const points = cumulativeNetChart.querySelector("polyline")?.getAttribute("points");
+    expect(points).toBeTruthy();
+    const yCoordinates = points!.split(" ").map((point) => Number(point.split(",")[1]));
+    expect(new Set(yCoordinates).size).toBe(1);
+  });
+
+  it("omits an Expense category when its refunds exceed its outflows", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "grocery-outflow",
+        amount: "-10.00",
+        kind: "Expense",
+        category: "Groceries",
+        date: `${selectedMonth}-05`,
+        description: null,
+      },
+      {
+        id: "grocery-refund",
+        amount: "25.00",
+        kind: "Expense",
+        category: "Groceries",
+        date: `${selectedMonth}-06`,
+        description: null,
+      },
+    ]);
+
+    render(<App />);
+
+    const analyticsCard = screen.getByRole("heading", { name: "Analytics" }).closest(".card");
+    expect(analyticsCard).not.toBeNull();
+    expect(
+      await within(analyticsCard as HTMLElement).findByText("No net spending for this month."),
+    ).toBeInTheDocument();
+    expect(
+      within(analyticsCard as HTMLElement).queryByRole("img", { name: "Spending by category chart" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows an empty analytics state instead of a flat chart", () => {

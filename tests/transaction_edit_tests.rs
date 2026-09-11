@@ -174,7 +174,7 @@ async fn add_transaction_and_get_id(
     common::add_transaction(
         app,
         access_token,
-        transaction_body(50.00, "2026-03-01", "Transportation", description),
+        transaction_body(-50.00, "2026-03-01", "Transportation", description),
     )
     .await;
 
@@ -296,7 +296,7 @@ async fn test_update_amount_and_date_does_not_regenerate_embedding() {
     let request = update_request(
         &access_token,
         transaction_id,
-        transaction_body(75.00, "2026-03-02", "Transportation", "Original commute"),
+        transaction_body(-75.00, "2026-03-02", "Transportation", "Original commute"),
     );
     let response = app.oneshot(request).await.unwrap();
 
@@ -313,7 +313,7 @@ async fn test_update_amount_and_date_does_not_regenerate_embedding() {
     let date: chrono::NaiveDate = row.get("date");
     let description: Option<String> = row.get("description");
 
-    assert_eq!(amount, rust_decimal::Decimal::new(7500, 2));
+    assert_eq!(amount, rust_decimal::Decimal::new(-7500, 2));
     assert_eq!(date, chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap());
     assert_eq!(description.as_deref(), Some("Original commute"));
     assert_eq!(stored_embedding(&state, transaction_id).await.unwrap(), original_embedding);
@@ -335,7 +335,7 @@ async fn test_update_semantic_fields_replaces_embedding() {
     let request = update_request(
         &access_token,
         transaction_id,
-        transaction_body(50.00, "2026-03-01", "Travel", "Updated train commute"),
+        transaction_body(-50.00, "2026-03-01", "Travel", "Updated train commute"),
     );
     let response = app.oneshot(request).await.unwrap();
 
@@ -365,7 +365,7 @@ async fn test_update_provider_failure_preserves_transaction_and_removes_stale_em
     let request = update_request(
         &access_token,
         transaction_id,
-        transaction_body(50.00, "2026-03-01", "Travel", "Updated train commute"),
+        transaction_body(-50.00, "2026-03-01", "Travel", "Updated train commute"),
     );
     let response = app.oneshot(request).await.unwrap();
 
@@ -400,7 +400,7 @@ async fn test_search_backfills_embedding_after_update_provider_failure() {
     let update = update_request(
         &access_token,
         transaction_id,
-        transaction_body(50.00, "2026-03-01", "Travel", "Updated train commute"),
+        transaction_body(-50.00, "2026-03-01", "Travel", "Updated train commute"),
     );
     let update_response = app.clone().oneshot(update).await.unwrap();
     assert_eq!(update_response.status(), axum::http::StatusCode::OK);
@@ -455,7 +455,7 @@ async fn test_user_cannot_update_another_users_transaction() {
     let request = update_request(
         &second_access_token,
         transaction_id,
-        transaction_body(50.00, "2026-03-01", "Travel", "Unauthorized update"),
+        transaction_body(-50.00, "2026-03-01", "Travel", "Unauthorized update"),
     );
     let response = app.oneshot(request).await.unwrap();
 
@@ -488,7 +488,7 @@ async fn test_delayed_update_cannot_overwrite_newer_embedding() {
     let first_request = update_request(
         &access_token,
         transaction_id,
-        transaction_body(50.00, "2026-03-01", "Travel", "First concurrent update"),
+        transaction_body(-50.00, "2026-03-01", "Travel", "First concurrent update"),
     );
     let first_app = app.clone();
     let first_update = tokio::spawn(async move { first_app.oneshot(first_request).await.unwrap() });
@@ -500,7 +500,7 @@ async fn test_delayed_update_cannot_overwrite_newer_embedding() {
     let second_request = update_request(
         &access_token,
         transaction_id,
-        transaction_body(50.00, "2026-03-01", "Travel", "Second concurrent update"),
+        transaction_body(-50.00, "2026-03-01", "Travel", "Second concurrent update"),
     );
     let second_response = tokio::time::timeout(
         Duration::from_secs(5),
@@ -535,9 +535,9 @@ async fn test_delayed_update_cannot_overwrite_newer_embedding() {
     assert_eq!(provider.call_count(), 3);
 }
 
-// transaction creation rejects non-positive amounts before writing data or calling the embedding provider
+// transaction creation rejects a zero amount before writing data or calling the embedding provider
 #[tokio::test]
-async fn test_create_rejects_non_positive_amount() {
+async fn test_create_rejects_zero_amount() {
     let provider = Arc::new(RecordingEmbeddingProvider::succeeds());
     let (state, app, user_id, access_token) = setup_user(provider.clone()).await;
     let request = axum::http::Request::builder()
@@ -567,9 +567,9 @@ async fn test_create_rejects_non_positive_amount() {
     assert_eq!(provider.call_count(), 0);
 }
 
-// a rejected update preserves the existing transaction and its embedding
+// ensure a zero amount update is rejected without changing the transaction or calling the embedding provider again
 #[tokio::test]
-async fn test_update_rejects_non_positive_amount() {
+async fn test_update_rejects_zero_amount_and_preserves_existing_transaction() {
     let provider = Arc::new(RecordingEmbeddingProvider::succeeds());
     let (state, app, _user_id, access_token) = setup_user(provider.clone()).await;
     let transaction_id = add_transaction_and_get_id(
@@ -578,11 +578,10 @@ async fn test_update_rejects_non_positive_amount() {
         "Original commute",
     )
     .await;
-    let original_embedding = stored_embedding(&state, transaction_id).await.unwrap();
     let request = update_request(
         &access_token,
         transaction_id,
-        transaction_body(-10.00, "2026-03-02", "Travel", "Invalid update"),
+        transaction_body(0.00, "2026-03-02", "Travel", "Invalid update"),
     );
 
     let response = app.oneshot(request).await.unwrap();
@@ -599,17 +598,54 @@ async fn test_update_rejects_non_positive_amount() {
     let category: Option<String> = row.get("category");
     let description: Option<String> = row.get("description");
 
-    assert_eq!(amount, rust_decimal::Decimal::new(5000, 2));
+    assert_eq!(amount, rust_decimal::Decimal::new(-5000, 2));
     assert_eq!(date, chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
     assert_eq!(category.as_deref(), Some("Transportation"));
     assert_eq!(description.as_deref(), Some("Original commute"));
-    assert_eq!(stored_embedding(&state, transaction_id).await.unwrap(), original_embedding);
+    assert_eq!(provider.call_count(), 1);
+}
+
+// accepting a negative amount preserves its sign without another embedding provider call when the semantic fields are unchanged
+#[tokio::test]
+async fn test_update_accepts_negative_amount() {
+    let provider = Arc::new(RecordingEmbeddingProvider::succeeds());
+    let (state, app, _user_id, access_token) = setup_user(provider.clone()).await;
+    let transaction_id = add_transaction_and_get_id(
+        &app,
+        &access_token,
+        "Original commute",
+    )
+    .await;
+    let request = update_request(
+        &access_token,
+        transaction_id,
+        transaction_body(-10.00, "2026-03-02", "Transportation", "Original commute"),
+    );
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let row = sqlx::query("SELECT amount, date, category, description FROM transactions WHERE id = $1")
+        .bind(transaction_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    let amount: rust_decimal::Decimal = row.get("amount");
+    let date: chrono::NaiveDate = row.get("date");
+    let category: Option<String> = row.get("category");
+    let description: Option<String> = row.get("description");
+
+    assert_eq!(amount, rust_decimal::Decimal::new(-1000, 2));
+    assert_eq!(date, chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap());
+    assert_eq!(category.as_deref(), Some("Transportation"));
+    assert_eq!(description.as_deref(), Some("Original commute"));
     assert_eq!(provider.call_count(), 1);
 }
 
 // the database constraint protects transaction amounts even when a write bypasses the HTTP handlers
 #[tokio::test]
-async fn test_database_rejects_non_positive_transaction_amount() {
+async fn test_database_rejects_zero_transaction_amount() {
     let provider = Arc::new(RecordingEmbeddingProvider::succeeds());
     let (state, _app, user_id, _access_token) = setup_user(provider).await;
 
@@ -618,7 +654,7 @@ async fn test_database_rejects_non_positive_transaction_amount() {
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(user_id)
-    .bind(rust_decimal::Decimal::new(-100, 2))
+    .bind(rust_decimal::Decimal::ZERO)
     .bind("expense")
     .bind(Some("Transportation"))
     .bind(chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap())

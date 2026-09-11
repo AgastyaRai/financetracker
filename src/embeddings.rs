@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_transaction_string_embedding() {
         let req = AddTransactionRequest {
-            amount: Decimal::new(1234, 2), // $12.34
+            amount: Decimal::new(-1234, 2), // -$12.34
             date: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
             category: Some("Food".to_string()),
             description: Some("Lunch at cafe".to_string()),

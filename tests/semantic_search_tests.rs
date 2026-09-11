@@ -34,7 +34,7 @@ mod semantic_search_tests {
 
         // add an Uber-related transaction
         let uber_transaction = serde_json::json!({
-            "amount": 17.17,
+            "amount": -17.17,
             "kind": "Expense",
             "date": "2026-01-07",
             "category": "Transportation",
@@ -45,7 +45,7 @@ mod semantic_search_tests {
 
         // now create a completely unrelated transaction
         let unrelated_transaction = serde_json::json!({
-            "amount": 170.00,
+            "amount": -170.00,
             "kind": "Expense",
             "date": "2026-01-08",
             "category": "Entertainment",
@@ -94,7 +94,7 @@ mod semantic_search_tests {
 
         // add a transaction for the first user
         let transaction_user1 = serde_json::json!({
-            "amount": 117.17,
+            "amount": -117.17,
             "kind": "Expense",
             "date": "2026-01-17",
             "category": "Groceries",
@@ -109,7 +109,7 @@ mod semantic_search_tests {
 
         // add a transaction for the second user that is similar to the first user's transaction
         let transaction_user2 = serde_json::json!({
-            "amount": 217.17,
+            "amount": -217.17,
             "kind": "Expense",
             "date": "2026-01-17",
             "category": "Groceries",
@@ -163,7 +163,7 @@ mod semantic_search_tests {
              VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id",
             user_id,
-            rust_decimal::Decimal::new(4242, 2),
+            rust_decimal::Decimal::new(-4242, 2),
             "expense",
             Some("Transportation".to_string()),
             chrono::NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
@@ -243,7 +243,7 @@ mod semantic_search_tests {
 
         // add  transaction for this user
         let transaction = serde_json::json!({
-            "amount": 50.00,
+            "amount": -50.00,
             "kind": "Expense",
             "date": "2026-01-25",
             "category": "Food",

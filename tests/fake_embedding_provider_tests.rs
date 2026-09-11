@@ -75,7 +75,7 @@ async fn test_fake_provider_stores_embedding() {
     let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
 
     let transaction = serde_json::json!({
-        "amount": 25.00,
+        "amount": -25.00,
         "kind": "Expense",
         "date": "2026-02-01",
         "category": "Food",
@@ -110,7 +110,7 @@ async fn test_transaction_creation_succeeds_when_fake_provider_fails() {
     let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
 
     let transaction = serde_json::json!({
-        "amount": 40.00,
+        "amount": -40.00,
         "kind": "Expense",
         "date": "2026-02-02",
         "category": "Utilities",
@@ -155,7 +155,7 @@ async fn test_fake_provider_backfills_missing_embedding() {
          RETURNING id",
     )
     .bind(user_id)
-    .bind(rust_decimal::Decimal::new(5500, 2))
+    .bind(rust_decimal::Decimal::new(-5500, 2))
     .bind("expense")
     .bind(Some("Transportation".to_string()))
     .bind(chrono::NaiveDate::from_ymd_opt(2026, 2, 3).unwrap())

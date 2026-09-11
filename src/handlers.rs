@@ -142,10 +142,10 @@ impl TransactionSemanticFields {
 fn validate_transaction_request(
     req: &AddTransactionRequest,
 ) -> Result<(), (StatusCode, String)> {
-    if req.amount <= rust_decimal::Decimal::ZERO {
+    if req.amount == rust_decimal::Decimal::ZERO {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Amount must be greater than zero".to_string(),
+            "Amount must not be zero".to_string(),
         ));
     }
 
@@ -521,7 +521,7 @@ pub(crate) async fn get_budget_progress(
         "SELECT
             b.category as \"category!\",
             b.amount as \"budget_amount!\",
-            COALESCE(SUM(t.amount), 0)::numeric as \"spent!\"
+            GREATEST(COALESCE(SUM(-t.amount), 0), 0)::numeric as \"spent!\"
         FROM budgets b
         LEFT JOIN transactions t
         ON t.user_id = b.user_id

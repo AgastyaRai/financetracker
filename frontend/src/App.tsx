@@ -60,9 +60,14 @@ function monthInputLabel(monthInput: string) {
   }).format(new Date(year, month - 1, 1));
 }
 
+function roundMoney(n: number) {
+  return Number(n.toFixed(2));
+}
+
 function money(n: number) {
   if (!Number.isFinite(n)) return "$0.00";
-  return `$${n.toFixed(2)}`;
+  const rounded = roundMoney(n);
+  return rounded < 0 ? `-$${Math.abs(rounded).toFixed(2)}` : `$${rounded.toFixed(2)}`;
 }
 
 /* ------------ Simple SVG Charts (no libraries) ------------ */
@@ -446,13 +451,15 @@ export default function App() {
   const monthIncomeExpense = useMemo(() => {
     let income = 0;
     let expense = 0;
+    let net = 0;
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
-      if (t.kind === "Income") income += v;
-      else expense += v;
+      if (v > 0) income += v;
+      else expense -= v;
+      net += v;
     }
-    return { income, expense, net: income - expense };
+    return { income, expense, net };
   }, [monthTx]);
 
   const cumulativeNetByDay = useMemo(() => {
@@ -467,13 +474,13 @@ export default function App() {
       const idx = day - 1;
       if (idx < 0 || idx >= days) continue;
 
-      daily[idx] += t.kind === "Income" ? v : -v;
+      daily[idx] += v;
     }
 
     const cum: number[] = [];
     let s = 0;
     for (const d of daily) {
-      s += d;
+      s = roundMoney(s + d);
       cum.push(s);
     }
     return cum;
@@ -488,11 +495,12 @@ export default function App() {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
       const cat = (t.category ?? "Uncategorized").trim() || "Uncategorized";
-      m.set(cat, (m.get(cat) ?? 0) + v);
+      m.set(cat, (m.get(cat) ?? 0) - v);
     }
 
     const items = Array.from(m.entries())
-      .map(([label, value]) => ({ label, value }))
+      .map(([label, value]) => ({ label, value: roundMoney(value) }))
+      .filter((item) => item.value > 0)
       .sort((a, b) => b.value - a.value);
 
     // top 8 is usually readable; you can bump this to 10 if you want
@@ -506,8 +514,8 @@ export default function App() {
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
-      if (t.kind === "Income") income += v;
-      else expense += v;
+      if (v > 0) income += v;
+      else expense -= v;
     }
     return { income, expense, net: income - expense };
   }, [monthTx]);
@@ -559,8 +567,11 @@ export default function App() {
     if (!amount || Number(amount) <= 0) return setTransactionStatus({ text: "Amount must be > 0", type: "error" });
     if (!date) return setTransactionStatus({ text: "Date is required", type: "error" });
 
+    // manual entries use a positive magnitude, sending Income as positive and Expense as negative
+    const signedAmount = (kind === "Income") ? amount : `-${amount}`;
+
     const tx: TransactionInput = {
-      amount,
+      amount: signedAmount,
       kind,
       category: category.trim() ? category.trim() : null,
       date,
@@ -819,11 +830,11 @@ export default function App() {
 
           <div className="summaryMetrics">
             <div className="metricTile">
-              <span className="metricLabel">Income</span>
+              <span className="metricLabel">Money in</span>
               <strong className="metricValue income">{money(summary.income)}</strong>
             </div>
             <div className="metricTile">
-              <span className="metricLabel">Expense</span>
+              <span className="metricLabel">Money out</span>
               <strong className="metricValue expense">{money(summary.expense)}</strong>
             </div>
             <div className="metricTile">
@@ -862,7 +873,7 @@ export default function App() {
               <div className="sectionHeader baseline">
                 <h3 style={{ margin: "0 0 6px" }}>Cumulative net (this month)</h3>
                 <span className="muted">
-                  Income: {money(monthIncomeExpense.income)} · Expense: {money(monthIncomeExpense.expense)} · Net:{" "}
+                  Money in: {money(monthIncomeExpense.income)} · Money out: {money(monthIncomeExpense.expense)} · Net:{" "}
                   <b>{money(monthIncomeExpense.net)}</b>
                 </span>
               </div>
@@ -878,8 +889,8 @@ export default function App() {
 
               {spendingCategoryChart.length === 0 ? (
                 <div className="emptyState compact">
-                  <strong>No expenses for this month.</strong>
-                  <span>Income activity is still reflected in cumulative net.</span>
+                  <strong>No net spending for this month.</strong>
+                  <span>Money entering the account is still reflected in cumulative net.</span>
                 </div>
               ) : (
                 <div className="chartFrame">

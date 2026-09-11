@@ -25,7 +25,7 @@ mod embedding_tests {
         let (user_id, access_token) = common::login_test_user(&build_app(state.clone()), &username, &password).await;
 
         let add_transaction_body = serde_json::json!({
-            "amount": 12.34,
+            "amount": -12.34,
             "kind": "Expense",
             "date": "2026-01-01",
             "category": "Food",
