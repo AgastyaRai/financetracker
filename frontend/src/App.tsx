@@ -12,6 +12,7 @@ import {
   setUnauthorizedCallback,
   semanticSearchTransactions,
 } from "./api";
+import { budgetPaceStatus, monthProgressPercent } from "./budget-status";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -62,7 +63,8 @@ function monthInputLabel(monthInput: string) {
 
 function money(n: number) {
   if (!Number.isFinite(n)) return "$0.00";
-  return `$${n.toFixed(2)}`;
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
 /* ------------ Simple SVG Charts (no libraries) ------------ */
@@ -73,17 +75,20 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
 
   if (values.length === 0) return <div className="muted">No data.</div>;
 
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  if (min === max) {
-    min -= 1;
-    max += 1;
+  let dataMin = Math.min(...values);
+  let dataMax = Math.max(...values);
+  if (dataMin === dataMax) {
+    dataMin -= 1;
+    dataMax += 1;
   }
 
-  const padTop = 12;
-  const padBottom = 18;
-  const padLeft = 10;
-  const padRight = 10;
+  const dataRange = dataMax - dataMin;
+  const chartMin = dataMin - dataRange * 0.12;
+  const chartMax = dataMax + dataRange * 0.12;
+  const padTop = 18;
+  const padBottom = 32;
+  const padLeft = 66;
+  const padRight = 24;
 
   const innerW = w - padLeft - padRight;
   const innerH = h - padTop - padBottom;
@@ -92,11 +97,24 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
 
   const toX = (i: number) => padLeft + i * xStep;
   const toY = (v: number) => {
-    const t = (v - min) / (max - min);
+    const t = (v - chartMin) / (chartMax - chartMin);
     return padTop + (1 - t) * innerH;
   };
 
   const points = values.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
+  const lastIndex = values.length - 1;
+  const lastValue = values[lastIndex];
+  const lastX = toX(lastIndex);
+  const lastY = toY(lastValue);
+  const lineColor = lastValue >= 0 ? "#4ade80" : "#ff5c7a";
+  const areaBaseY = dataMin >= 0
+    ? padTop + innerH
+    : dataMax <= 0
+      ? padTop
+      : toY(0);
+  const areaPoints = `${padLeft},${areaBaseY} ${points} ${lastX},${areaBaseY}`;
+  const yTicks = [dataMax, (dataMax + dataMin) / 2, dataMin];
+  const dayTicks = Array.from(new Set([0, Math.floor(lastIndex / 2), lastIndex]));
 
   return (
     <svg
@@ -108,21 +126,72 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
       style={{ display: "block" }}
     >
       <title>Cumulative net for the selected month</title>
-      <line
-        x1={padLeft}
-        y1={padTop + innerH}
-        x2={padLeft + innerW}
-        y2={padTop + innerH}
-        stroke="rgba(255,255,255,0.10)"
-      />
-      <polyline fill="none" stroke="rgba(34,211,238,0.95)" strokeWidth="3" points={points} />
+      <defs>
+        <linearGradient id="lineAreaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
+          <stop offset="100%" stopColor={lineColor} stopOpacity="0.01" />
+        </linearGradient>
+      </defs>
+      {yTicks.map((tick) => (
+        <g key={tick}>
+          <line
+            x1={padLeft}
+            y1={toY(tick)}
+            x2={padLeft + innerW}
+            y2={toY(tick)}
+            stroke="rgba(255,255,255,0.08)"
+          />
+          <text
+            className="lineChartScale"
+            x={padLeft - 10}
+            y={toY(tick) + 4}
+            textAnchor="end"
+          >
+            {money(tick)}
+          </text>
+        </g>
+      ))}
+      {dataMin < 0 && dataMax > 0 ? (
+        <line
+          x1={padLeft}
+          y1={toY(0)}
+          x2={padLeft + innerW}
+          y2={toY(0)}
+          stroke="rgba(255,255,255,0.30)"
+        />
+      ) : null}
+      <polygon points={areaPoints} fill="url(#lineAreaGrad)" />
       <polyline
         fill="none"
-        stroke="rgba(124,92,255,0.55)"
-        strokeWidth="6"
-        opacity="0.35"
+        stroke={lineColor}
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         points={points}
       />
+      <circle className="lineChartEndpoint" cx={lastX} cy={lastY} r="4" fill={lineColor} />
+      <text
+        className="lineChartEndpointValue"
+        x={lastX - 8}
+        y={lastY < padTop + 22 ? lastY + 22 : lastY - 10}
+        textAnchor="end"
+        fill={lineColor}
+        fontSize="12"
+        fontWeight="800"
+      >
+        {money(lastValue)}
+      </text>
+      {dayTicks.map((index) => (
+        <text
+          className="lineChartDayLabel"
+          key={index}
+          x={toX(index)}
+          y={padTop + innerH + 24}
+          textAnchor={index === 0 ? "start" : index === lastIndex ? "end" : "middle"}
+        >
+          Day {index + 1}
+        </text>
+      ))}
     </svg>
   );
 }
@@ -143,17 +212,18 @@ function BarChart({
 
   const max = Math.max(...data.map((d) => d.value), 1);
 
-  const padTop = 14;
-  const padBottom = 62; // space for rotated labels
+  const n = data.length;
+  const rotateLabels = n > 4;
+  const padTop = 22;
+  const padBottom = rotateLabels ? 62 : 46; // space for rotated labels
   const padLeft = 18;
   const padRight = 12;
 
   const innerW = w - padLeft - padRight;
   const innerH = h - padTop - padBottom;
 
-  const n = data.length;
   const band = innerW / n;
-  const barW = Math.max(10, band * 0.62);
+  const barW = Math.min(120, Math.max(24, band * 0.56));
 
   const yFor = (v: number) => padTop + innerH * (1 - v / max);
   const hFor = (v: number) => innerH * (v / max);
@@ -168,12 +238,6 @@ function BarChart({
       style={{ display: "block" }}
     >
       <title>Spending by category for the selected month</title>
-      <defs>
-        <linearGradient id="barGrad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="rgba(124,92,255,0.95)" />
-          <stop offset="100%" stopColor="rgba(34,211,238,0.85)" />
-        </linearGradient>
-      </defs>
 
       {/* gridlines */}
       {[0.25, 0.5, 0.75, 1].map((t) => {
@@ -212,33 +276,36 @@ function BarChart({
           <g key={d.label}>
             {/* bar */}
             <rect
+              className="categoryBar"
               x={x}
               y={y}
               width={barW}
               height={bh}
-              rx={10}
-              fill="url(#barGrad)"
-              opacity={0.95}
+              rx={8}
+              fill="var(--accent)"
+              opacity={0.94}
             />
             {/* value on top */}
             <text
+              className="categoryBarValue"
               x={xCenter}
               y={y - 6}
               textAnchor="middle"
               fontSize="12"
-              fill="rgba(233,234,242,0.85)"
+              fill="var(--accent2)"
               style={{ fontWeight: 700 }}
             >
               {money(d.value)}
             </text>
             {/* rotated label */}
             <text
+              className="categoryBarLabel"
               x={xCenter}
-              y={padTop + innerH + 34}
+              y={padTop + innerH + (rotateLabels ? 34 : 28)}
               textAnchor="middle"
               fontSize="12"
-              fill="rgba(233,234,242,0.75)"
-              transform={`rotate(-25 ${xCenter} ${padTop + innerH + 34})`}
+              fill="rgba(244,244,245,0.90)"
+              transform={rotateLabels ? `rotate(-25 ${xCenter} ${padTop + innerH + 34})` : undefined}
             >
               {label}
             </text>
@@ -449,8 +516,9 @@ export default function App() {
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
-      if (t.kind === "Income") income += v;
-      else expense += v;
+      const magnitude = Math.abs(v);
+      if (t.kind === "Income") income += magnitude;
+      else expense += magnitude;
     }
     return { income, expense, net: income - expense };
   }, [monthTx]);
@@ -462,12 +530,13 @@ export default function App() {
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
+      const magnitude = Math.abs(v);
 
       const day = Number(t.date.slice(8, 10));
       const idx = day - 1;
       if (idx < 0 || idx >= days) continue;
 
-      daily[idx] += t.kind === "Income" ? v : -v;
+      daily[idx] += t.kind === "Income" ? magnitude : -magnitude;
     }
 
     const cum: number[] = [];
@@ -488,7 +557,7 @@ export default function App() {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
       const cat = (t.category ?? "Uncategorized").trim() || "Uncategorized";
-      m.set(cat, (m.get(cat) ?? 0) + v);
+      m.set(cat, (m.get(cat) ?? 0) + Math.abs(v));
     }
 
     const items = Array.from(m.entries())
@@ -506,13 +575,15 @@ export default function App() {
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
-      if (t.kind === "Income") income += v;
-      else expense += v;
+      const magnitude = Math.abs(v);
+      if (t.kind === "Income") income += magnitude;
+      else expense += magnitude;
     }
     return { income, expense, net: income - expense };
   }, [monthTx]);
 
   const selectedMonthLabel = useMemo(() => monthInputLabel(selectedMonth), [selectedMonth]);
+  const budgetMonthProgress = monthProgressPercent(selectedMonth);
 
   // Handlers
   async function handleRegister() {
@@ -859,22 +930,32 @@ export default function App() {
           <>
             {/* net line chart */}
             <div className="chartSection">
-              <div className="sectionHeader baseline">
-                <h3 style={{ margin: "0 0 6px" }}>Cumulative net (this month)</h3>
-                <span className="muted">
-                  Income: {money(monthIncomeExpense.income)} · Expense: {money(monthIncomeExpense.expense)} · Net:{" "}
-                  <b>{money(monthIncomeExpense.net)}</b>
-                </span>
+              <div className="sectionHeader baseline chartHeading">
+                <h3>Cumulative net</h3>
+                <div className="analyticsStats">
+                  <span className="analyticsStat income">
+                    <span>Income</span>
+                    <strong>{money(monthIncomeExpense.income)}</strong>
+                  </span>
+                  <span className="analyticsStat expense">
+                    <span>Expense</span>
+                    <strong>{money(monthIncomeExpense.expense)}</strong>
+                  </span>
+                  <span className="analyticsStat net">
+                    <span>Net</span>
+                    <strong>{money(monthIncomeExpense.net)}</strong>
+                  </span>
+                </div>
               </div>
 
               <div className="chartFrame">
-                <LineChart values={cumulativeNetByDay} height={170} />
+                <LineChart values={cumulativeNetByDay} height={190} />
               </div>
             </div>
 
             {/* REAL bar chart for spending by category */}
             <div className="chartSection">
-              <h3 style={{ margin: "0 0 8px" }}>Spending by category (this month)</h3>
+              <h3 className="chartTitle">Spending by category</h3>
 
               {spendingCategoryChart.length === 0 ? (
                 <div className="emptyState compact">
@@ -883,12 +964,12 @@ export default function App() {
                 </div>
               ) : (
                 <div className="chartFrame">
-                  <BarChart data={spendingCategoryChart} height={240} />
+                  <BarChart data={spendingCategoryChart} height={210} />
                 </div>
               )}
 
               {spendingCategoryChart.length > 0 ? (
-                <p className="muted" style={{ marginTop: 8 }}>
+                <p className="muted chartCaption">
                   Showing top categories (by total spend) for readability.
                 </p>
               ) : null}
@@ -901,9 +982,10 @@ export default function App() {
       <div className="card dashboardSection">
         <div className="sectionHeader baseline">
           <h2 style={{ margin: 0 }}>Budget progress</h2>
-          <span className="muted">
-            Total spent: <b>{money(totalSpent)}</b> · Total budget: <b>{money(totalBudget)}</b>
-          </span>
+          <div className="budgetTotals">
+            <span>Total spent <strong>{money(totalSpent)}</strong></span>
+            <span>Total budget <strong>{money(totalBudget)}</strong></span>
+          </div>
         </div>
 
         {loadingBudgets ? (
@@ -913,51 +995,52 @@ export default function App() {
             No progress yet — create budgets for this month, then add expense transactions with matching categories.
           </p>
         ) : (
-          <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+          <div className="budgetProgressList">
             {progress.map((p) => {
               const budget = Number(p.budget_amount);
               const spent = Number(p.spent);
               const remaining = Number(p.remaining);
               const pct = budget > 0 ? (spent / budget) * 100 : 0;
               const over = pct > 100;
+              const normalizedPct = Math.min(100, Math.max(0, pct));
+              const { tone: budgetTone, label: budgetStatusLabel } = budgetPaceStatus(pct, budgetMonthProgress);
 
               return (
-                <div key={p.category} style={{ display: "grid", gap: 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                      <span style={{ fontWeight: 900, fontSize: 16 }}>{p.category}</span>
-                      {over ? (
-                        <span style={{ color: "rgb(255, 99, 132)", fontWeight: 900 }}>Over budget</span>
-                      ) : null}
+                <article key={p.category} className={`budgetProgressItem ${budgetTone}`}>
+                  <div className="budgetProgressHeader">
+                    <div className="budgetCategory">
+                      <strong>{p.category}</strong>
+                      <span className={`budgetStatusBadge ${budgetTone}`}>{budgetStatusLabel}</span>
                     </div>
-                    <span className="muted" style={{ fontWeight: 700 }}>
-                      {money(spent)} / {money(budget)} ({pct.toFixed(0)}%)
-                    </span>
+                    <div className="budgetProgressAmount">
+                      <strong>{money(spent)} <span>/</span> {money(budget)}</strong>
+                      <span>{pct.toFixed(0)}% used</span>
+                    </div>
                   </div>
 
                   <div
-                    style={{
-                      height: 18,
-                      borderRadius: 999,
-                      border: "1px solid rgba(255,255,255,0.14)",
-                      background: "rgba(255,255,255,0.06)",
-                      overflow: "hidden",
-                    }}
+                    className="budgetTrack"
+                    role="progressbar"
+                    aria-label={`${p.category} budget used`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(normalizedPct)}
+                    aria-valuetext={`${pct.toFixed(0)}% used`}
                   >
                     <div
+                      className={`budgetFill ${budgetTone}`}
                       style={{
-                        width: `${Math.min(100, Math.max(0, pct))}%`,
-                        height: "100%",
-                        borderRadius: 999,
-                        background: over
-                          ? "linear-gradient(90deg, rgba(255,99,132,0.95), rgba(255,159,64,0.85))"
-                          : "linear-gradient(90deg, rgba(124,92,255,0.90), rgba(34,211,238,0.80))",
+                        width: `${normalizedPct}%`,
+                        minWidth: spent > 0 ? "8px" : 0,
                       }}
                     />
                   </div>
 
-                  <span className="muted">Remaining: {money(remaining)}</span>
-                </div>
+                  <div className="budgetProgressFooter">
+                    <span>{over ? "Over by" : "Remaining"}</span>
+                    <strong>{money(Math.abs(remaining))}</strong>
+                  </div>
+                </article>
               );
             })}
           </div>

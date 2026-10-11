@@ -55,16 +55,16 @@ h2{
 .tabs button:last-child{ border-radius: 0 10px 10px 0; border-left: none; }
 
 .tabs button.active{
-  background: linear-gradient(90deg, rgba(124,92,255,0.35), rgba(34,211,238,0.22));
-  border-color: rgba(124,92,255,0.45);
+  background: #111527;
+  border-color: var(--accent);
 }
 
 .card{
   background: var(--card);
-  border: 1px solid var(--border);
+  border: 3px solid var(--border-strong);
   border-radius: 16px;
   padding: 22px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(115,128,201,0.05);
 }
 
 .formGrid{
@@ -93,15 +93,15 @@ input, select{
   width: 100%;
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.18);
-  background: #030304;
+  border: 1px solid var(--border);
+  background: #05070b;
   color: var(--text);
   outline: none;
 }
 
 input:focus, select:focus{
-  border-color: rgba(124,92,255,0.55);
-  box-shadow: 0 0 0 3px rgba(124,92,255,0.20);
+  border-color: var(--accent2);
+  box-shadow: 0 0 0 3px rgba(51,65,143,0.18);
 }
 
 input[type="checkbox"]{
@@ -111,28 +111,28 @@ input[type="checkbox"]{
 
 button{
   border-radius: 12px;
-  border: 1px solid rgba(124,92,255,0.72);
-  background: #08080a;
+  border: 1px solid var(--border);
+  background: #080a10;
   color: var(--text);
   font-weight: 650;
   letter-spacing: 0.01em;
   padding: 10px 14px;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(34,211,238,0.10);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
   transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 
-button:hover{ transform: translateY(-1px); background: #101014; border-color: rgba(34,211,238,0.72); }
+button:hover{ transform: translateY(-1px); background: #111527; border-color: var(--accent2); }
 button:active{ transform: translateY(0px); }
 button:disabled{ cursor: not-allowed; opacity: 0.65; transform: none; }
 button:focus-visible{
   outline: none;
-  border-color: rgba(255,255,255,0.65);
-  box-shadow: 0 0 0 3px rgba(124,92,255,0.28);
+  border-color: var(--accent2);
+  box-shadow: 0 0 0 3px rgba(51,65,143,0.22);
 }
 
 .buttonSecondary{
-  background: #08080a;
+  background: #080a10;
   color: var(--text);
   border-color: var(--border);
   box-shadow: none;
@@ -160,6 +160,8 @@ button:focus-visible{
 .headerTitle{
   display: grid;
   gap: 3px;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent);
 }
 
 .headerTitle h1{
@@ -243,9 +245,9 @@ button:focus-visible{
   display: grid;
   gap: 5px;
   padding: 14px 15px;
-  border: 1px solid rgba(255,255,255,0.09);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(255,255,255,0.035);
+  background: var(--card2);
 }
 
 .metricLabel{
@@ -272,12 +274,80 @@ button:focus-visible{
   margin-top: 18px;
 }
 
+.chartSection + .chartSection{
+  margin-top: 24px;
+}
+
+.chartHeading{
+  gap: 16px;
+  align-items: end;
+}
+
+.chartHeading h3,
+.chartTitle{
+  margin: 0;
+}
+
+.chartTitle{
+  margin-bottom: 10px;
+}
+
+.analyticsStats{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(96px, auto));
+  gap: 8px;
+}
+
+.analyticsStat{
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card2);
+}
+
+.analyticsStat > span{
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.analyticsStat strong{
+  font-size: 14px;
+}
+
+.analyticsStat.income strong{ color: var(--success); }
+.analyticsStat.expense strong{ color: var(--danger); }
+
 .chartFrame{
-  padding: 10px;
+  padding: 14px 16px 8px;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.10);
+  border: 3px solid var(--border-strong);
   border-radius: 14px;
-  background: rgba(0,0,0,0.18);
+  background: #06080d;
+}
+
+.lineChartScale,
+.lineChartDayLabel{
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.lineChartEndpoint{
+  stroke: #06080d;
+  stroke-width: 3px;
+}
+
+.categoryBar{
+  filter: drop-shadow(0 5px 12px rgba(51,65,143,0.22));
+}
+
+.chartCaption{
+  margin: 8px 2px 0;
+  font-size: 13px;
 }
 
 .emptyState{
@@ -287,7 +357,7 @@ button:focus-visible{
   min-height: 170px;
   margin-top: 18px;
   padding: 24px;
-  border: 1px dashed rgba(255,255,255,0.16);
+  border: 1px solid var(--border);
   border-radius: 14px;
   background: rgba(0,0,0,0.14);
   color: var(--muted);
@@ -302,6 +372,142 @@ button:focus-visible{
 .emptyState.compact{
   min-height: 110px;
   margin-top: 0;
+}
+
+.budgetTotals{
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.budgetTotals span{
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card2);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.budgetTotals strong{
+  color: var(--text);
+  font-size: 14px;
+}
+
+.budgetProgressList{
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.budgetProgressItem{
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 3px solid var(--border-strong);
+  border-radius: 13px;
+  background: #080a10;
+}
+
+.budgetProgressItem.over{
+  border-color: rgba(255,92,122,0.58);
+}
+
+.budgetProgressItem.attention{
+  border-color: rgba(245,185,66,0.42);
+}
+
+.budgetProgressHeader{
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.budgetCategory{
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.budgetCategory strong{
+  font-size: 17px;
+}
+
+.budgetStatusBadge{
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.budgetStatusBadge.healthy{
+  background: rgba(74,222,128,0.10);
+  color: var(--success);
+}
+
+.budgetStatusBadge.attention{
+  background: rgba(245,185,66,0.10);
+  color: var(--warning);
+}
+
+.budgetStatusBadge.over{
+  background: rgba(255,92,122,0.12);
+  color: var(--danger);
+}
+
+.budgetProgressAmount{
+  display: grid;
+  gap: 2px;
+  text-align: right;
+}
+
+.budgetProgressAmount strong{
+  font-size: 15px;
+}
+
+.budgetProgressAmount strong span,
+.budgetProgressAmount > span{
+  color: var(--muted);
+}
+
+.budgetProgressAmount > span{
+  font-size: 12px;
+}
+
+.budgetTrack{
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #03050a;
+}
+
+.budgetFill{
+  height: 100%;
+  border-radius: inherit;
+}
+
+.budgetFill.healthy{ background: var(--success); }
+.budgetFill.attention{ background: var(--warning); }
+.budgetFill.over{ background: var(--danger); }
+
+.budgetProgressFooter{
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.budgetProgressFooter strong{
+  color: var(--text);
 }
 
 .budgetForm .fullRow{
@@ -370,6 +576,10 @@ tbody tr:nth-child(odd){
 }
 
 @media (max-width: 600px){
+  h1{ font-size: clamp(34px, 11vw, 44px); }
+  button, input, select{ min-height: 44px; }
+  input[type="checkbox"]{ min-height: 20px; min-width: 20px; }
+
   .container{
     width: min(100% - 28px, 1000px);
     padding: 28px 0 48px;
@@ -382,6 +592,20 @@ tbody tr:nth-child(odd){
   .summaryMetrics{ grid-template-columns: 1fr; }
   .sectionHeaderControls{ width: 100%; }
   .sectionHeaderControls input{ max-width: none !important; }
+  .chartHeading{ align-items: stretch; }
+  .analyticsStats{ width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .analyticsStat{ min-width: 0; padding: 8px; }
+  .analyticsStat strong{ font-size: 12px; }
+  .chartFrame{ padding: 10px 8px 4px; }
+  .lineChartScale{ display: none; }
+  .lineChartDayLabel,
+  .lineChartEndpointValue,
+  .categoryBarValue,
+  .categoryBarLabel{ font-size: 28px; }
+  .budgetTotals{ width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .budgetTotals span{ display: grid; gap: 2px; border-radius: 10px; }
+  .budgetProgressHeader{ align-items: flex-start; }
+  .budgetCategory{ display: grid; gap: 4px; }
 }
 
 

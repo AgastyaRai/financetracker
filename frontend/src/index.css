@@ -5,15 +5,17 @@
   --bg1: #000000;
   --bg2: #000000;
 
-  --card: #070708;
-  --card2: #0b0b0d;
-  --border: rgba(255,255,255,0.16);
+  --card: #07080c;
+  --card2: #0a0c13;
+  --border: #1d2438;
+  --border-strong: #2f3b73;
 
   --text: #f4f4f5;
   --muted: rgba(244,244,245,0.68);
 
-  --accent: #7c5cff;
-  --accent2: #22d3ee;
+  --accent: #33418f;
+  --accent2: #7380c9;
+  --warning: #f5b942;
   --danger: #ff5c7a;
   --success: #4ade80;
 

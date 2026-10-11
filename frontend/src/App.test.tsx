@@ -239,6 +239,29 @@ describe("dashboard correctness", () => {
     expect(screen.getAllByDisplayValue(expectedMonth)).toHaveLength(2);
   });
 
+  it("labels budget pace by comparing percent used with percent of the month elapsed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 9, 10, 12));
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 60_000));
+    apiMocks.getBudgetProgress.mockResolvedValue([
+      { category: "On pace", budget_amount: "100.00", spent: "32.00", remaining: "68.00" },
+      { category: "Ahead of pace", budget_amount: "100.00", spent: "33.00", remaining: "67.00" },
+      { category: "Exceeded", budget_amount: "100.00", spent: "101.00", remaining: "-1.00" },
+    ]);
+
+    render(<App />);
+
+    const onPaceCard = (await screen.findByText("On pace")).closest(".budgetProgressItem");
+    const aheadCard = screen.getByText("Ahead of pace").closest(".budgetProgressItem");
+    const exceededCard = screen.getByText("Exceeded").closest(".budgetProgressItem");
+    expect(onPaceCard).not.toBeNull();
+    expect(aheadCard).not.toBeNull();
+    expect(exceededCard).not.toBeNull();
+    expect(within(onPaceCard as HTMLElement).getByText("On track")).toBeInTheDocument();
+    expect(within(aheadCard as HTMLElement).getByText("Watch")).toBeInTheDocument();
+    expect(within(exceededCard as HTMLElement).getByText("Over budget")).toBeInTheDocument();
+  });
+
   it("summarizes only transactions from the selected month", async () => {
     const now = new Date();
     const selectedMonth = [
@@ -289,6 +312,44 @@ describe("dashboard correctness", () => {
     expect(within(summaryCard as HTMLElement).getByText("$25.00")).toBeInTheDocument();
     expect(within(summaryCard as HTMLElement).getByText("$75.00")).toBeInTheDocument();
     expect(within(summaryCard as HTMLElement).getByText(selectedMonthLabel)).toBeInTheDocument();
+  });
+
+  it("normalizes signed expense amounts in summaries and category bars", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "signed-expense",
+        amount: "-25.00",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: null,
+      },
+    ]);
+
+    render(<App />);
+
+    const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card");
+    expect(summaryCard).not.toBeNull();
+    const expenseTile = (await within(summaryCard as HTMLElement).findByText("Expense")).closest(".metricTile");
+    const netTile = within(summaryCard as HTMLElement).getByText("Net").closest(".metricTile");
+    expect(expenseTile).not.toBeNull();
+    expect(netTile).not.toBeNull();
+    expect(within(expenseTile as HTMLElement).getByText("$25.00")).toBeInTheDocument();
+    expect(within(netTile as HTMLElement).getByText("-$25.00")).toBeInTheDocument();
+
+    const transactionsCard = screen.getByRole("heading", { name: "Transactions" }).closest(".card");
+    expect(transactionsCard).not.toBeNull();
+    expect(within(transactionsCard as HTMLElement).getByText("-$25.00")).toBeInTheDocument();
+
+    const categoryChart = await screen.findByRole("img", { name: "Spending by category chart" });
+    const categoryBar = categoryChart.querySelector(".categoryBar");
+    expect(categoryBar).not.toBeNull();
+    expect(Number(categoryBar?.getAttribute("height"))).toBeGreaterThan(0);
   });
 
   it("shows an empty analytics state instead of a flat chart", () => {
