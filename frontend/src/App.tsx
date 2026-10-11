@@ -13,6 +13,7 @@ import {
   semanticSearchTransactions,
 } from "./api";
 import { budgetPaceStatus, monthProgressPercent } from "./budget-status";
+import { buildDayTicks, buildLineChartScale } from "./chart-scale";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -67,6 +68,11 @@ function money(n: number) {
   return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
+function axisMoney(n: number) {
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
 /* ------------ Simple SVG Charts (no libraries) ------------ */
 
 function LineChart({ values, height = 160 }: { values: number[]; height?: number }) {
@@ -75,16 +81,11 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
 
   if (values.length === 0) return <div className="muted">No data.</div>;
 
-  let dataMin = Math.min(...values);
-  let dataMax = Math.max(...values);
-  if (dataMin === dataMax) {
-    dataMin -= 1;
-    dataMax += 1;
-  }
-
-  const dataRange = dataMax - dataMin;
-  const chartMin = dataMin - dataRange * 0.12;
-  const chartMax = dataMax + dataRange * 0.12;
+  const dataMin = Math.min(...values);
+  const dataMax = Math.max(...values);
+  const scale = buildLineChartScale(values);
+  const chartMin = scale.min;
+  const chartMax = scale.max;
   const padTop = 18;
   const padBottom = 32;
   const padLeft = 66;
@@ -113,8 +114,8 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
       ? padTop
       : toY(0);
   const areaPoints = `${padLeft},${areaBaseY} ${points} ${lastX},${areaBaseY}`;
-  const yTicks = [dataMax, (dataMax + dataMin) / 2, dataMin];
-  const dayTicks = Array.from(new Set([0, Math.floor(lastIndex / 2), lastIndex]));
+  const yTicks = [...scale.ticks].reverse();
+  const dayTicks = buildDayTicks(values.length);
 
   return (
     <svg
@@ -132,14 +133,35 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
           <stop offset="100%" stopColor={lineColor} stopOpacity="0.01" />
         </linearGradient>
       </defs>
+      <line
+        className="lineChartAxis"
+        x1={padLeft}
+        y1={padTop}
+        x2={padLeft}
+        y2={padTop + innerH}
+      />
+      <line
+        className="lineChartAxis"
+        x1={padLeft}
+        y1={padTop + innerH}
+        x2={padLeft + innerW}
+        y2={padTop + innerH}
+      />
       {yTicks.map((tick) => (
         <g key={tick}>
           <line
+            className="lineChartGrid"
             x1={padLeft}
             y1={toY(tick)}
             x2={padLeft + innerW}
             y2={toY(tick)}
-            stroke="rgba(255,255,255,0.08)"
+          />
+          <line
+            className="lineChartTick"
+            x1={padLeft - 5}
+            y1={toY(tick)}
+            x2={padLeft}
+            y2={toY(tick)}
           />
           <text
             className="lineChartScale"
@@ -147,7 +169,7 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
             y={toY(tick) + 4}
             textAnchor="end"
           >
-            {money(tick)}
+            {axisMoney(tick)}
           </text>
         </g>
       ))}
@@ -182,15 +204,23 @@ function LineChart({ values, height = 160 }: { values: number[]; height?: number
         {money(lastValue)}
       </text>
       {dayTicks.map((index) => (
-        <text
-          className="lineChartDayLabel"
-          key={index}
-          x={toX(index)}
-          y={padTop + innerH + 24}
-          textAnchor={index === 0 ? "start" : index === lastIndex ? "end" : "middle"}
-        >
-          Day {index + 1}
-        </text>
+        <g key={index}>
+          <line
+            className="lineChartTick"
+            x1={toX(index)}
+            y1={padTop + innerH}
+            x2={toX(index)}
+            y2={padTop + innerH + 5}
+          />
+          <text
+            className="lineChartDayLabel"
+            x={toX(index)}
+            y={padTop + innerH + 24}
+            textAnchor={index === 0 ? "start" : index === lastIndex ? "end" : "middle"}
+          >
+            Day {index + 1}
+          </text>
+        </g>
       ))}
     </svg>
   );

@@ -31,6 +31,10 @@ describe("dashboard visual hierarchy", () => {
   });
 
   it("adds readable scale cues and semantic budget states", () => {
+    expect(appSource).toContain("buildLineChartScale(values)");
+    expect(appSource).toContain("buildDayTicks(values.length)");
+    expect(appSource).toContain('className="lineChartAxis"');
+    expect(appSource).toContain('className="lineChartTick"');
     expect(appSource).toContain('className="lineChartScale"');
     expect(appSource).toContain('className="lineChartDayLabel"');
     expect(appSource).toContain('className="lineChartEndpoint"');

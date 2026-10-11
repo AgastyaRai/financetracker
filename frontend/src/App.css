@@ -336,6 +336,19 @@ button:focus-visible{
   font-size: 11px;
 }
 
+.lineChartAxis,
+.lineChartTick{
+  stroke: var(--border-strong);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.lineChartGrid{
+  stroke: rgba(244,244,245,0.09);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
 .lineChartEndpoint{
   stroke: #06080d;
   stroke-width: 3px;
