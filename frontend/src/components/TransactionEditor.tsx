@@ -1,79 +1,103 @@
 import { useState } from "react";
 import type { Transaction, TransactionInput, TransactionKind } from "../types";
-import StatusMessageView, { type StatusMessage } from "./StatusMessageView";
+import type { StatusMessage } from "./StatusMessageView";
 
 type Props = {
   transaction: Transaction;
+  similarity?: number;
+  showSimilarity: boolean;
   submitting: boolean;
   status: StatusMessage | null;
   onSave: (input: TransactionInput) => Promise<void>;
   onCancel: () => void;
 };
 
-export default function TransactionEditor({ transaction, submitting, status, onSave, onCancel }: Props) {
+export default function TransactionEditor({ transaction, similarity, showSimilarity, submitting, status, onSave, onCancel }: Props) {
   const [amount, setAmount] = useState(() => transaction.amount.replace(/^-/, ""));
   const [kind, setKind] = useState<TransactionKind>(transaction.kind);
   const [date, setDate] = useState(transaction.date);
   const [category, setCategory] = useState(transaction.category ?? "");
   const [description, setDescription] = useState(transaction.description ?? "");
+  const formId = `edit-transaction-${transaction.id}`;
+  const errorId = status ? "transaction-edit-error" : undefined;
 
   return (
-    <div className="transactionEditor">
-      <h3 id="transaction-edit-title">Edit transaction</h3>
-      <form
-        aria-labelledby="transaction-edit-title"
-        className="formGrid transactionForm"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onSave({
-            amount, kind, date,
-            category: category.trim() || null,
-            description: description.trim() || null,
-          });
+    <>
+      <tr
+        className="transactionEditingRow"
+        onFocus={(event) => event.target.scrollIntoView?.({ block: "nearest", inline: "nearest" })}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !submitting) {
+            event.preventDefault();
+            onCancel();
+          }
         }}
       >
-        <label htmlFor="edit-transaction-amount">Amount</label>
-        <input
-          id="edit-transaction-amount" type="number" inputMode="decimal"
-          min="0.01" step="0.01" required autoFocus disabled={submitting}
-          value={amount} onChange={(event) => setAmount(event.target.value)}
-        />
-
-        <label htmlFor="edit-transaction-kind">Kind</label>
-        <select
-          id="edit-transaction-kind" disabled={submitting}
-          value={kind} onChange={(event) => setKind(event.target.value as TransactionKind)}
-        >
-          <option value="Expense">Expense</option>
-          <option value="Income">Income</option>
-        </select>
-
-        <label htmlFor="edit-transaction-date">Date</label>
-        <input
-          id="edit-transaction-date" type="date" required disabled={submitting}
-          value={date} onChange={(event) => setDate(event.target.value)}
-        />
-
-        <label htmlFor="edit-transaction-category">Category (optional)</label>
-        <input
-          id="edit-transaction-category" disabled={submitting}
-          value={category} onChange={(event) => setCategory(event.target.value)}
-        />
-
-        <label htmlFor="edit-transaction-description">Description (optional)</label>
-        <input
-          id="edit-transaction-description" disabled={submitting}
-          value={description} onChange={(event) => setDescription(event.target.value)}
-        />
-
-        <div className="fullRow formActions">
-          <div className="transactionEditActions">
-            <button type="submit" disabled={submitting}>{submitting ? "Saving…" : "Save changes"}</button>
-            <button type="button" className="buttonSecondary" disabled={submitting} onClick={onCancel}>Cancel</button>
-          </div>
-          <StatusMessageView message={status} />
-        </div>
-      </form>
-    </div>
+        <td>
+          <input
+            form={formId} aria-label="Date" aria-describedby={errorId}
+            type="date" required disabled={submitting}
+            value={date} onChange={(event) => setDate(event.target.value)}
+          />
+        </td>
+        <td>
+          <select
+            form={formId} aria-label="Kind" aria-describedby={errorId} disabled={submitting}
+            value={kind} onChange={(event) => setKind(event.target.value as TransactionKind)}
+          >
+            <option value="Expense">Expense</option>
+            <option value="Income">Income</option>
+          </select>
+        </td>
+        <td>
+          <input
+            form={formId} aria-label="Category (optional)" aria-describedby={errorId} disabled={submitting}
+            value={category} onChange={(event) => setCategory(event.target.value)}
+          />
+        </td>
+        <td>
+          <input
+            form={formId} aria-label="Description (optional)" aria-describedby={errorId} disabled={submitting}
+            value={description} onChange={(event) => setDescription(event.target.value)}
+          />
+        </td>
+        {showSimilarity && <td>{similarity === undefined ? "-" : `${(similarity * 100).toFixed(1)}%`}</td>}
+        <td>
+          <input
+            form={formId} aria-label="Amount" aria-describedby={errorId}
+            type="number" inputMode="decimal" min="0.01" step="0.01" required autoFocus disabled={submitting}
+            value={amount} onChange={(event) => setAmount(event.target.value)}
+          />
+        </td>
+        <td>
+          <form
+            id={formId} aria-label="Edit transaction" className="transactionEditActions"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onSave({
+                amount, kind, date,
+                category: category.trim() || null,
+                description: description.trim() || null,
+              });
+            }}
+          >
+            <button
+              type="submit" className="transactionRowAction transactionRowActionSave" disabled={submitting}
+              aria-label={submitting ? "Saving…" : "Save changes"} title={submitting ? "Saving…" : "Save changes"}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d={submitting ? "M5 12h.01M12 12h.01M19 12h.01" : "m5 12 5 5 9-10"} />
+              </svg>
+            </button>
+            <button
+              type="button" className="transactionRowAction" disabled={submitting}
+              aria-label="Cancel" title="Cancel" onClick={onCancel}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+            </button>
+          </form>
+        </td>
+      </tr>
+    </>
   );
 }

@@ -797,7 +797,7 @@ describe("transaction editing", () => {
   }
 
   function editor() {
-    return screen.getByRole("form", { name: "Edit transaction" });
+    return screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement;
   }
 
   async function openEditor(user: ReturnType<typeof userEvent.setup>) {
@@ -808,6 +808,40 @@ describe("transaction editing", () => {
   beforeEach(() => {
     localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 180_000));
     apiMocks.getTransactions.mockResolvedValue([originalTransaction()]);
+  });
+
+  it("turns only the selected transaction row into editable cells", async () => {
+    const user = userEvent.setup();
+    apiMocks.getTransactions.mockResolvedValue([
+      originalTransaction(), { ...originalTransaction(), id: "other-row", description: "Train" },
+    ]);
+    render(<App />);
+    await openEditor(user);
+    const form = screen.getByRole("form", { name: "Edit transaction" });
+    const row = form.closest("tr");
+    expect(row).not.toBeNull();
+    expect(screen.queryByRole("heading", { name: "Edit transaction" })).not.toBeInTheDocument();
+    expect(within(row as HTMLElement).getByLabelText("Amount").closest("td")).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByLabelText("Date").closest("td")).toBeInTheDocument();
+    const otherRow = screen.getByText("Train").closest("tr") as HTMLElement;
+    expect(within(otherRow).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(otherRow).getByRole("button", { name: /Edit transaction: Train/ })).toBeInTheDocument();
+  });
+
+  it("submits inline fields with Enter and cancels with Escape", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openEditor(user);
+    const row = screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement;
+    await user.clear(within(row).getByLabelText("Description (optional)"));
+    await user.type(within(row).getByLabelText("Description (optional)"), "Inline coffee{Enter}");
+    await waitFor(() => expect(apiMocks.updateTransaction).toHaveBeenCalledWith("edit-coffee", expect.objectContaining({ description: "Inline coffee" })));
+    await screen.findByText("Transaction updated successfully.");
+    await openEditor(user);
+    const nextRow = screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement;
+    await user.type(within(nextRow).getByLabelText("Description (optional)"), "cancelled{Escape}");
+    expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
+    expect(apiMocks.updateTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("prefills the existing fields and cancels without writing", async () => {
@@ -880,8 +914,8 @@ describe("transaction editing", () => {
     render(<App />);
     const form = await openEditor(user);
     fireEvent.change(form.getByLabelText("Amount"), { target: { value: "0" } });
-    fireEvent.submit(editor());
-    expect(await form.findByRole("alert")).toHaveTextContent("Amount must be greater than zero");
+    fireEvent.submit(screen.getByRole("form", { name: "Edit transaction" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Amount must be greater than zero");
     expect(apiMocks.updateTransaction).not.toHaveBeenCalled();
   });
 
@@ -893,7 +927,7 @@ describe("transaction editing", () => {
     await user.clear(form.getByLabelText("Description (optional)"));
     await user.type(form.getByLabelText("Description (optional)"), "Corrected coffee");
     await user.click(form.getByRole("button", { name: "Save changes" }));
-    expect(await form.findByRole("alert")).toHaveTextContent("Transaction not found");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Transaction not found");
     expect(form.getByLabelText("Description (optional)")).toHaveValue("Corrected coffee");
     expect(apiMocks.getTransactions).toHaveBeenCalledTimes(1);
     await user.click(form.getByRole("button", { name: "Save changes" }));
@@ -911,7 +945,7 @@ describe("transaction editing", () => {
     expect(form.getByRole("button", { name: "Saving…" })).toBeDisabled();
     expect(form.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(form.getByLabelText("Amount")).toBeDisabled();
-    fireEvent.submit(editor());
+    fireEvent.submit(screen.getByRole("form", { name: "Edit transaction" }));
     expect(apiMocks.updateTransaction).toHaveBeenCalledTimes(1);
     await act(async () => { save.resolve(undefined); });
     await screen.findByText("Transaction updated successfully.");

@@ -30,12 +30,19 @@ export default function TransactionsSection({
   semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction
 }: Props) {
   const shownSemanticTransactions = semanticResults?.transactions ?? null;
-  const editButtonRef = useRef<HTMLButtonElement | null>(null);
+  const shownRows: Array<{ transaction: Transaction; similarity?: number }> = shownSemanticTransactions
+    ? shownSemanticTransactions.map((match) => ({ transaction: match.transaction, similarity: match.similarity_score }))
+    : transactions.map((transaction) => ({ transaction }));
+  const rows = editingTransaction && !shownRows.some((row) => row.transaction.id === editingTransaction.id)
+    ? [{ transaction: editingTransaction }, ...shownRows] : shownRows;
+  const editButtonRef = useRef<string | null>(null);
+  const rowActionRefs = useRef(new Map<string, HTMLButtonElement>());
   const queryInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (editingTransaction || !editButtonRef.current) return;
-    if (editButtonRef.current.isConnected && !editButtonRef.current.disabled) editButtonRef.current.focus();
+    const button = rowActionRefs.current.get(editButtonRef.current);
+    if (button?.isConnected && !button.disabled) button.focus();
     else queryInputRef.current?.focus();
     editButtonRef.current = null;
   }, [editingTransaction]);
@@ -43,14 +50,22 @@ export default function TransactionsSection({
   function editButton(transaction: Transaction) {
     return (
       <button
-        type="button" className="buttonSecondary transactionEditButton" disabled={submittingEdit}
+        ref={(button) => {
+          if (button) rowActionRefs.current.set(transaction.id, button);
+          else rowActionRefs.current.delete(transaction.id);
+        }}
+        type="button" className="transactionRowAction" disabled={submittingEdit} title="Edit transaction"
         aria-label={`Edit transaction: ${transaction.description || transaction.category || transaction.kind}, ${transaction.date}`}
-        aria-pressed={editingTransaction?.id === transaction.id}
-        onClick={(event) => {
-          editButtonRef.current = event.currentTarget;
+        onClick={() => {
+          editButtonRef.current = transaction.id;
           startEditingTransaction(transaction);
         }}
-      >Edit</button>
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m16 4 4 4-11 11H5v-4L16 4Z" />
+          <path d="m14 6 4 4" />
+        </svg>
+      </button>
     );
   }
 
@@ -102,15 +117,10 @@ export default function TransactionsSection({
         </div>
       </form>
 
-      {editingTransaction && (
-        <TransactionEditor
-          key={editingTransaction.id} transaction={editingTransaction}
-          submitting={submittingEdit} status={editStatus}
-          onSave={handleUpdateTransaction} onCancel={cancelEditingTransaction}
-        />
-      )}
-
       <StatusMessageView message={transactionsStatus} />
+      {editingTransaction && editStatus && (
+        <div id="transaction-edit-error"><StatusMessageView message={editStatus} /></div>
+      )}
 
       {semanticResults?.summary && (
         <div className="card" style={{ marginBottom: 14 }}>
@@ -119,67 +129,50 @@ export default function TransactionsSection({
         </div>
       )}
 
-      {shownSemanticTransactions ? (
-        shownSemanticTransactions.length === 0 ? (
-          <p className="muted">No matching transactions found.</p>
-        ) : (
-          <div className="tableScroll transactionTable" tabIndex={0} role="region" aria-label="Transactions table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Kind</th>
-                  <th>Category</th>
-                  <th>Description</th>
-                  <th>Similarity</th>
-                  <th style={{ textAlign: "right" }}>Amount</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shownSemanticTransactions.map((match) => (
-                  <tr key={match.transaction.id}>
-                    <td>{match.transaction.date}</td>
-                    <td>{match.transaction.kind}</td>
-                    <td>{match.transaction.category ?? "-"}</td>
-                    <td>{match.transaction.description ?? "-"}</td>
-                    <td>{(match.similarity_score * 100).toFixed(1)}%</td>
-                    <td style={{ textAlign: "right" }}>
-                      {money(Number(match.transaction.amount))}
-                    </td>
-                    <td>{editButton(match.transaction)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-      ) : loadingTx ? (
+      {loadingTx && !shownSemanticTransactions && !editingTransaction ? (
         <p className="muted">Loading…</p>
-      ) : transactions.length === 0 ? (
-        <p className="muted">No transactions yet.</p>
+      ) : rows.length === 0 ? (
+        <p className="muted">{shownSemanticTransactions ? "No matching transactions found." : "No transactions yet."}</p>
       ) : (
-        <div className="tableScroll transactionTable" tabIndex={0} role="region" aria-label="Transactions table">
+        <div className={`tableScroll transactionTable${shownSemanticTransactions ? " transactionSemanticTable" : ""}`} tabIndex={0} role="region" aria-label="Transactions table">
           <table>
+            <colgroup>
+              <col className="transactionDateColumn" />
+              <col className="transactionKindColumn" />
+              <col className="transactionCategoryColumn" />
+              <col />
+              {shownSemanticTransactions && <col className="transactionSimilarityColumn" />}
+              <col className="transactionAmountColumn" />
+              <col className="transactionActionsColumn" />
+            </colgroup>
             <thead>
               <tr>
                 <th>Date</th>
                 <th>Kind</th>
                 <th>Category</th>
                 <th>Description</th>
+                {shownSemanticTransactions && <th>Similarity</th>}
                 <th style={{ textAlign: "right" }}>Amount</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {transactions.map((t) => (
+              {rows.map(({ transaction: t, similarity }) => editingTransaction?.id === t.id ? (
+                <TransactionEditor
+                  key={t.id} transaction={editingTransaction} similarity={similarity}
+                  showSimilarity={shownSemanticTransactions !== null}
+                  submitting={submittingEdit} status={editStatus}
+                  onSave={handleUpdateTransaction} onCancel={cancelEditingTransaction}
+                />
+              ) : (
                 <tr key={t.id}>
                   <td>{t.date}</td>
                   <td>{t.kind}</td>
                   <td>{t.category ?? "-"}</td>
                   <td>{t.description ?? "-"}</td>
+                  {shownSemanticTransactions && <td>{similarity === undefined ? "-" : `${(similarity * 100).toFixed(1)}%`}</td>}
                   <td style={{ textAlign: "right" }}>{money(Number(t.amount))}</td>
-                  <td>{editButton(t)}</td>
+                  <td className="transactionRowActions">{editButton(t)}</td>
                 </tr>
               ))}
             </tbody>

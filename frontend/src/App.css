@@ -797,22 +797,66 @@ tbody tr:nth-child(odd){
   font-variant-numeric: tabular-nums;
 }
 
-.transactionEditor{
-  margin: 18px 0;
-  padding: 18px;
-  border: 2px solid var(--border-strong);
-  border-radius: 8px;
-  background: #080a10;
+.transactionTable table{ min-width: 740px; table-layout: fixed; overflow: visible; }
+.transactionSemanticTable table{ min-width: 820px; }
+.transactionTable td{ overflow-wrap: anywhere; }
+.transactionTable:focus-visible{ outline: 2px solid var(--accent2); outline-offset: 2px; }
+.transactionDateColumn{ width: 148px; }
+.transactionKindColumn{ width: 110px; }
+.transactionCategoryColumn{ width: 132px; }
+.transactionSimilarityColumn{ width: 76px; }
+.transactionAmountColumn{ width: 106px; }
+.transactionActionsColumn{ width: 96px; }
+.transactionRowActions{ text-align: center; }
+
+.transactionRowAction{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
 }
 
-.transactionEditor h3{ margin: 0 0 18px; }
-.transactionEditActions{ display: flex; flex-wrap: wrap; gap: 12px; }
-.transactionEditActions button{ flex: 1; }
-.transactionEditButton{ padding: 8px 12px; }
-.transactionTable table{ min-width: 720px; overflow: visible; }
-.transactionTable:focus-visible{ outline: 2px solid var(--accent2); outline-offset: 2px; }
+.transactionRowAction:hover{
+  background: rgba(104,122,202,0.12);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.transactionRowAction svg{
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.transactionRowActionSave{ color: var(--success); }
+.transactionEditActions{ display: flex; justify-content: center; gap: 4px; }
+.transactionTable tbody tr.transactionEditingRow{ background: #0d1020; }
+.transactionEditingRow td{ padding: 8px 6px; }
+.transactionEditingRow input,
+.transactionEditingRow select{ min-width: 0; min-height: 36px; padding: 7px 8px; font-size: 13px; }
+.transactionTable{ scroll-padding-inline-end: 96px; }
 
 @media (max-width: 600px){
+  .transactionDateColumn{ width: 132px; }
+  .transactionActionsColumn{ width: 108px; }
+  .transactionTable{ scroll-padding-inline-end: 108px; }
+  .transactionRowAction{ width: 44px; min-height: 44px; }
+  .transactionEditingRow input,
+  .transactionEditingRow select{ min-height: 44px; }
+}
+
+@media (max-width: 900px){
   .transactionTable th:last-child,
   .transactionTable td:last-child{
     position: sticky;
