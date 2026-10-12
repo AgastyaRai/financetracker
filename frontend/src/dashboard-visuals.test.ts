@@ -50,4 +50,28 @@ describe("dashboard visual hierarchy", () => {
     expect(appSource).toContain('className="categoryBarLabel"');
     expect(appCss).toContain("border-left: 3px solid var(--accent);");
   });
+
+  it("uses continuous bold separators for table columns without a spreadsheet grid", () => {
+    expect(appCss).toContain("thead th:not(:last-child),");
+    expect(appCss).toContain("tbody td:not(:last-child){");
+    expect(appCss).toContain("border-right: 2px solid var(--border-strong);");
+    expect(appCss).not.toContain("border-bottom: 1px solid rgba(255,255,255,0.06);");
+    expect(appCss).not.toContain("tbody td:not(:last-child)::after");
+  });
+
+  it("gives form controls consistent corners and stronger outlines", () => {
+    const buttonCss = appCss.split("\nbutton{")[1]?.split("}")[0] ?? "";
+    expect(buttonCss).toContain("border-radius: 6px;");
+    expect(buttonCss).toContain("border: 2px solid var(--border-strong);");
+  });
+
+  it("separates major card frames from internal control borders", () => {
+    const cardCss = appCss.match(/\.card\{([^}]+)\}/)?.[1] ?? "";
+    expect(indexCss).toContain("--card: #0c0e15;");
+    expect(indexCss).toContain("--section-border: #111216;");
+    expect(indexCss).toContain("--section-accent: #586ab6;");
+    expect(cardCss).toContain("linear-gradient(90deg, var(--section-accent), var(--border-strong) 12%, #1c2030 45%, var(--section-border) 78%) border-box");
+    expect(cardCss).toContain("border-left-width: 4px;");
+    expect(cardCss).not.toContain("inset");
+  });
 });

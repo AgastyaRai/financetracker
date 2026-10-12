@@ -52,4 +52,14 @@ describe("API requests", () => {
     expect(localStorage.getItem("user_id")).toBeNull();
     expect(logout).toHaveBeenCalledOnce();
   });
+
+  it("extracts readable messages from JSON API errors", async () => {
+    fetchMock.mockResolvedValue({
+      status: 400,
+      ok: false,
+      text: vi.fn().mockResolvedValue(JSON.stringify({ error: "Invalid transaction" })),
+    });
+
+    await expect(getTransactions()).rejects.toMatchObject({ message: "Invalid transaction" });
+  });
 });

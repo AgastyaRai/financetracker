@@ -10,6 +10,20 @@ export function setUnauthorizedCallback(callback: () => void) {
   onUnauthorized = callback;
 }
 
+function responseErrorMessage(text: string, status: number) {
+  if (!text) return `Request failed (${status})`;
+
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    if (typeof body.error === "string") return body.error;
+    if (typeof body.message === "string") return body.message;
+  } catch {
+    // Plain-text responses are already suitable for display.
+  }
+
+  return text;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("access_token");
   const res = await fetch(`${API_BASE}${path}`, {
@@ -37,7 +51,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const msg = await res.text().catch(() => "");
-    throw new Error(msg || `Request failed (${res.status})`);
+    throw new Error(responseErrorMessage(msg, res.status));
   }
 
   const text = await res.text();

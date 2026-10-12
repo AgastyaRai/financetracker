@@ -25,6 +25,16 @@ type StatusMessage = {
   type: "error" | "success";
 };
 
+function StatusMessageView({ message }: { message: StatusMessage | null }) {
+  if (!message) return null;
+
+  return (
+    <p className={`status ${message.type}`} role={message.type === "error" ? "alert" : "status"}>
+      {message.text}
+    </p>
+  );
+}
+
 function localDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -599,18 +609,8 @@ export default function App() {
   }, [monthTx]);
 
   // Selected-month summary
-  const summary = useMemo(() => {
-    let income = 0;
-    let expense = 0;
-    for (const t of monthTx) {
-      const v = Number(t.amount);
-      if (!Number.isFinite(v)) continue;
-      const magnitude = Math.abs(v);
-      if (t.kind === "Income") income += magnitude;
-      else expense += magnitude;
-    }
-    return { income, expense, net: income - expense };
-  }, [monthTx]);
+  // The summary and analytics header intentionally share one selected-month total.
+  const summary = monthIncomeExpense;
 
   const selectedMonthLabel = useMemo(() => monthInputLabel(selectedMonth), [selectedMonth]);
   const budgetMonthProgress = monthProgressPercent(selectedMonth);
@@ -656,6 +656,7 @@ export default function App() {
     if (!isAuthenticated) return;
     if (submittingTransaction) return;
     setTransactionStatus(null);
+    setTransactionsStatus(null);
 
     if (!amount || Number(amount) <= 0) return setTransactionStatus({ text: "Amount must be > 0", type: "error" });
     if (!date) return setTransactionStatus({ text: "Date is required", type: "error" });
@@ -673,10 +674,19 @@ export default function App() {
       await addTransaction(tx);
       setDescription("");
       setTransactionStatus({ text: "Transaction added successfully.", type: "success" });
-      await refreshTransactions();
-      await refreshBudgets(monthStart);
     } catch (e: unknown) {
       setTransactionStatus({ text: errorMessage(e), type: "error" });
+      setSubmittingTransaction(false);
+      return;
+    }
+
+    try {
+      await Promise.all([refreshTransactions(), refreshBudgets(monthStart)]);
+    } catch (e: unknown) {
+      setTransactionsStatus({
+        text: `Transaction was saved, but the dashboard could not refresh: ${errorMessage(e)}`,
+        type: "error",
+      });
     } finally {
       setSubmittingTransaction(false);
     }
@@ -702,9 +712,19 @@ export default function App() {
       await upsertBudget(b);
       setBudgetStatus({ text: "Budget saved.", type: "success" });
       setBudgetCategory("");
-      await refreshBudgets(monthStart);
     } catch (e: unknown) {
       setBudgetStatus({ text: errorMessage(e), type: "error" });
+      setSubmittingBudget(false);
+      return;
+    }
+
+    try {
+      await refreshBudgets(monthStart);
+    } catch (e: unknown) {
+      setBudgetStatus({
+        text: `Budget was saved, but the dashboard could not refresh: ${errorMessage(e)}`,
+        type: "error",
+      });
     } finally {
       setSubmittingBudget(false);
     }
@@ -796,7 +816,9 @@ export default function App() {
               />
 
               <div className="fullRow">
-                <button type="submit" disabled={submittingAuth}>Create account</button>
+                <button type="submit" disabled={submittingAuth}>
+                  {submittingAuth ? "Creating account…" : "Create account"}
+                </button>
               </div>
             </form>
           </div>
@@ -823,13 +845,15 @@ export default function App() {
               />
 
               <div className="fullRow">
-                <button type="submit" disabled={submittingAuth}>Login</button>
+                <button type="submit" disabled={submittingAuth}>
+                  {submittingAuth ? "Logging in…" : "Login"}
+                </button>
               </div>
             </form>
           </div>
         )}
 
-        {authStatus ? <p className={`status ${authStatus.type}`}>{authStatus.text}</p> : null}
+        <StatusMessageView message={authStatus} />
       </div>
     );
   }
@@ -904,10 +928,10 @@ export default function App() {
             />
 
             <div className="fullRow formActions">
-              <button type="submit" disabled={submittingTransaction}>Add</button>
-              {transactionStatus ? (
-                <p className={`status ${transactionStatus.type}`}>{transactionStatus.text}</p>
-              ) : null}
+              <button type="submit" disabled={submittingTransaction}>
+                {submittingTransaction ? "Adding…" : "Add"}
+              </button>
+              <StatusMessageView message={transactionStatus} />
             </div>
           </form>
         </div>
@@ -1112,12 +1136,14 @@ export default function App() {
           />
 
           <div className="fullRow">
-            <button type="submit" disabled={submittingBudget}>Save budget</button>
-            {budgetStatus ? <p className={`status ${budgetStatus.type}`}>{budgetStatus.text}</p> : null}
+            <button type="submit" disabled={submittingBudget}>
+              {submittingBudget ? "Saving…" : "Save budget"}
+            </button>
+            <StatusMessageView message={budgetStatus} />
           </div>
         </form>
 
-        <div style={{ marginTop: 14 }}>
+        <div style={{ marginTop: 18 }}>
           {loadingBudgets ? (
             <p className="muted">Loading budgets…</p>
           ) : budgets.length === 0 ? (
@@ -1148,7 +1174,7 @@ export default function App() {
         <h2>Transactions</h2>
 
         <form
-          style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}
+          className="transactionSearch"
           onSubmit={(e) => { e.preventDefault(); void handleSemanticSearch(); }}
         >
           <input
@@ -1157,7 +1183,7 @@ export default function App() {
             onChange={(e) => setSemanticQuery(e.target.value)}
             maxLength={500}
             placeholder="Search transactions semantically (e.g. uber, groceries, ride home)"
-            style={{ flex: "1 1 260px", minWidth: 0 }}
+            className="searchQuery"
           />
 
           <input
@@ -1179,18 +1205,18 @@ export default function App() {
             Summarize with AI
           </label>
 
-          <button type="submit" disabled={searchingSemantic}>
-            {searchingSemantic ? "Searching..." : "Search"}
-          </button>
+          <div className="searchActions">
+            <button type="submit" disabled={searchingSemantic}>
+              {searchingSemantic ? "Searching..." : "Search"}
+            </button>
 
-          <button type="button" onClick={clearSemanticSearch}>
-            Clear
-          </button>
+            <button type="button" className="buttonSecondary" onClick={clearSemanticSearch}>
+              Clear
+            </button>
+          </div>
         </form>
 
-        {transactionsStatus ? (
-          <p className={`status ${transactionsStatus.type}`}>{transactionsStatus.text}</p>
-        ) : null}
+        <StatusMessageView message={transactionsStatus} />
 
         {semanticResults?.summary && (
           <div className="card" style={{ marginBottom: 14 }}>

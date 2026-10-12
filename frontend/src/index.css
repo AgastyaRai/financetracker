@@ -5,10 +5,12 @@
   --bg1: #000000;
   --bg2: #000000;
 
-  --card: #07080c;
+  --card: #0c0e15;
   --card2: #0a0c13;
   --border: #1d2438;
   --border-strong: #2f3b73;
+  --section-border: #111216;
+  --section-accent: #586ab6;
 
   --text: #f4f4f5;
   --muted: rgba(244,244,245,0.68);

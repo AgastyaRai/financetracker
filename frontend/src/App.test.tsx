@@ -146,6 +146,18 @@ describe("dashboard correctness", () => {
     localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 60_000));
   });
 
+  it("clears the client session and returns to login when logging out", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+
+    expect(screen.getByRole("heading", { name: "FinanceTracker" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("access_token")).toBeNull();
+  });
+
   it("shows budget validation beside the budget form", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -154,7 +166,7 @@ describe("dashboard correctness", () => {
 
     const budgetCard = screen.getByRole("heading", { name: "Budgets" }).closest(".card");
     expect(budgetCard).not.toBeNull();
-    expect(within(budgetCard as HTMLElement).getByText("Budget category is required")).toBeInTheDocument();
+    expect(within(budgetCard as HTMLElement).getByRole("alert")).toHaveTextContent("Budget category is required");
   });
 
   it("uses labelled numeric amount fields", () => {
@@ -199,6 +211,7 @@ describe("dashboard correctness", () => {
     await user.click(addButton);
 
     expect(addButton).toBeDisabled();
+    expect(addButton).toHaveTextContent("Adding…");
     await user.click(addButton);
     expect(apiMocks.addTransaction).toHaveBeenCalledTimes(1);
 
@@ -218,6 +231,40 @@ describe("dashboard correctness", () => {
 
     const status = await within(budgetCard as HTMLElement).findByText("Budget saved.");
     expect(status).toHaveClass("success");
+    expect(status).toHaveAttribute("role", "status");
+  });
+
+  it("reports a successful transaction separately from a failed dashboard refresh", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(apiMocks.getTransactions).toHaveBeenCalledTimes(1));
+    apiMocks.getTransactions.mockRejectedValueOnce(new Error("offline"));
+
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Transaction added successfully.");
+    const refreshWarning = "Transaction was saved, but the dashboard could not refresh: offline";
+    expect(await screen.findByRole("alert")).toHaveTextContent(refreshWarning);
+
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(apiMocks.addTransaction).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(refreshWarning)).not.toBeInTheDocument();
+  });
+
+  it("reports a successful budget save clearly when its refresh fails", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(apiMocks.getBudgets).toHaveBeenCalledTimes(1));
+    apiMocks.getBudgets.mockRejectedValueOnce(new Error("offline"));
+
+    const budgetCard = screen.getByRole("heading", { name: "Budgets" }).closest(".card");
+    expect(budgetCard).not.toBeNull();
+    await user.type(within(budgetCard as HTMLElement).getByLabelText("Category"), "Food");
+    await user.click(within(budgetCard as HTMLElement).getByRole("button", { name: "Save budget" }));
+
+    expect(await within(budgetCard as HTMLElement).findByRole("alert")).toHaveTextContent(
+      "Budget was saved, but the dashboard could not refresh: offline",
+    );
   });
 
   it("uses local calendar values for the initial date and month", () => {
