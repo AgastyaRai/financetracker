@@ -807,9 +807,10 @@ tbody tr:nth-child(odd){
 .transactionSimilarityColumn{ width: 76px; }
 .transactionAmountColumn{ width: 106px; }
 .transactionActionsColumn{ width: 96px; }
-.transactionRowActions{ text-align: center; }
+.transactionRowActions{ text-align: center; padding: 8px 6px; }
 
 .transactionRowAction{
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;

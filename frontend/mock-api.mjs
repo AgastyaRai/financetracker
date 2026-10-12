@@ -66,6 +66,13 @@ function budgetProgress(budgets, transactions, month) {
 export function createMockApiServer(initialState = {}) {
   const transactions = structuredClone(initialState.transactions ?? seededTransactions);
   const budgets = structuredClone(initialState.budgets ?? seededBudgets);
+  const importedDetails = structuredClone(initialState.importedDetails ?? {});
+  const listTransactions = () => transactions.map((transaction) => {
+    const original = importedDetails[transaction.id];
+    return { ...transaction, can_revert: Boolean(original
+      && ["Income", "Expense"].includes(original.kind)
+      && ["kind", "category", "description"].some((field) => transaction[field] !== original[field])) };
+  });
   const token = `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url")}.x`;
 
   return createServer(async (request, response) => {
@@ -87,7 +94,7 @@ export function createMockApiServer(initialState = {}) {
       }
 
       if (request.method === "GET" && url.pathname === "/api/transactions") {
-        sendJson(response, 200, transactions);
+        sendJson(response, 200, listTransactions());
         return;
       }
 
@@ -109,6 +116,24 @@ export function createMockApiServer(initialState = {}) {
         });
         response.statusCode = 204;
         response.end();
+        return;
+      }
+
+      if (request.method === "POST" && /^\/api\/transactions\/[^/]+\/revert$/.test(url.pathname)) {
+        const id = decodeURIComponent(url.pathname.split("/")[3]);
+        const transaction = transactions.find((existing) => existing.id === id);
+        const original = importedDetails[id];
+        if (!transaction || !original) {
+          sendJson(response, 404, { error: "Imported transaction not found" });
+          return;
+        }
+        if (!["Income", "Expense"].includes(original.kind)) {
+          sendJson(response, 409, { error: "The original transaction kind is not supported yet" });
+          return;
+        }
+        const fields = { kind: original.kind, category: original.category ?? null, description: original.description ?? null };
+        Object.assign(transaction, fields);
+        sendJson(response, 200, fields);
         return;
       }
 

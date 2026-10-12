@@ -91,6 +91,12 @@ export async function updateTransaction(id: string, tx: TransactionInput): Promi
   });
 }
 
+export async function revertTransaction(id: string) {
+  return await request<Pick<Transaction, "kind" | "category" | "description">>(`/transactions/${encodeURIComponent(id)}/revert`, {
+    method: "POST",
+  });
+}
+
 export async function getTransactions() {
   return await request<Transaction[]>("/transactions", { method: "GET" });
 }

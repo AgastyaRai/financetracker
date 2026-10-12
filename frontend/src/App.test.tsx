@@ -7,6 +7,7 @@ import type { Budget, SemanticSearchResult, Transaction } from "./types";
 const apiMocks = vi.hoisted(() => ({
   addTransaction: vi.fn(),
   updateTransaction: vi.fn(),
+  revertTransaction: vi.fn(),
   getBudgetProgress: vi.fn(),
   getBudgets: vi.fn(),
   getTransactions: vi.fn(),
@@ -1080,5 +1081,115 @@ describe("transaction editing", () => {
     expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
     expect(screen.queryByText("Transaction updated successfully.")).not.toBeInTheDocument();
     expect(apiMocks.getTransactions).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe("imported transaction revert", () => {
+  const edited = {
+    id: "imported-coffee", amount: "75.50", kind: "Income" as const,
+    category: "Edited", date: monthValue() + "-12", description: "Edited import", can_revert: true,
+  };
+  const original = { kind: "Expense" as const, category: "Transportation", description: "Original commute" };
+  const restored = { ...edited, ...original, can_revert: false };
+
+  beforeEach(() => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 180_000));
+    apiMocks.getTransactions.mockResolvedValue([edited]);
+    apiMocks.revertTransaction.mockResolvedValue(original);
+  });
+
+  it("offers revert only for eligible rows and preserves amount/date when dashboard refresh fails", async () => {
+    const user = userEvent.setup();
+    apiMocks.getTransactions.mockResolvedValueOnce([edited, { ...edited, id: "manual", description: "Manual", can_revert: false }])
+      .mockRejectedValue(new Error("Refresh unavailable"));
+    render(<App />);
+    const revert = await screen.findByRole("button", { name: /Revert imported fields: Edited import/ });
+    expect(screen.getAllByRole("button", { name: /Revert imported fields:/ })).toHaveLength(1);
+    await user.click(revert);
+    expect(apiMocks.revertTransaction).toHaveBeenCalledExactlyOnceWith("imported-coffee");
+    expect(await screen.findByRole("alert")).toHaveTextContent("reverted, but the dashboard could not refresh");
+    const row = screen.getByText("Original commute").closest("tr") as HTMLElement;
+    expect(row).toHaveTextContent("$75.50");
+    expect(row).toHaveTextContent(edited.date);
+    expect(within(row).queryByRole("button", { name: /Revert imported fields:/ })).not.toBeInTheDocument();
+  });
+
+  it("refreshes totals and the accepted semantic search after restoring the row", async () => {
+    const user = userEvent.setup();
+    apiMocks.semanticSearchTransactions.mockResolvedValueOnce({ transactions: [{ transaction: edited, similarity_score: 0.9 }], summary: "Old summary" })
+      .mockResolvedValue({ transactions: [{ transaction: restored, similarity_score: 0.8 }], summary: "Restored summary" });
+    render(<App />);
+    await screen.findByText("Edited import");
+    await user.type(screen.getByLabelText("Semantic search query"), "commute");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByText("Old summary");
+    apiMocks.getTransactions.mockResolvedValue([restored]);
+    await user.click(screen.getByRole("button", { name: /Revert imported fields:/ }));
+    expect(await screen.findByText("Imported fields reverted successfully.")).toBeInTheDocument();
+    await screen.findByText("Restored summary");
+    expect(screen.queryByText("Old summary")).not.toBeInTheDocument();
+    expect(apiMocks.getBudgetProgress).toHaveBeenLastCalledWith(monthValue() + "-01");
+    expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(2);
+    const summary = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
+    expect(within(summary).getByText("Expense").closest(".metricTile")).toHaveTextContent("$75.50");
+  });
+
+  it("keeps the row and allows retry when revert fails", async () => {
+    const user = userEvent.setup();
+    apiMocks.revertTransaction.mockRejectedValueOnce(new Error("Imported transaction not found"));
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Revert imported fields:/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Imported transaction not found");
+    expect(screen.getByText("Edited import")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Revert imported fields:/ })).toBeEnabled();
+    expect(apiMocks.getTransactions).toHaveBeenCalledTimes(1);
+  });
+
+  it("protects unsaved edits and prevents duplicate writes while reverting", async () => {
+    const user = userEvent.setup();
+    apiMocks.getTransactions.mockResolvedValue([edited, { ...edited, id: "another", description: "Another import" }]);
+    const pending = deferred<typeof original>();
+    apiMocks.revertTransaction.mockReturnValue(pending.promise);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Edit transaction: Another import/ }));
+    expect(screen.getByRole("button", { name: /Revert imported fields: Edited import/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const revert = screen.getByRole("button", { name: /Revert imported fields: Edited import/ });
+    await user.click(revert);
+    expect(revert).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Edit transaction: Another import/ })).toBeDisabled();
+    await user.click(revert);
+    expect(apiMocks.revertTransaction).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve(original));
+  });
+
+  it("preserves focus when the user moves to the search box during a pending revert", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<typeof original>();
+    apiMocks.revertTransaction.mockReturnValue(pending.promise);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Revert imported fields:/ }));
+    const query = screen.getByLabelText("Semantic search query");
+    await user.type(query, "draft search");
+    apiMocks.getTransactions.mockResolvedValue([restored]);
+    await act(async () => pending.resolve(original));
+    await screen.findByText("Imported fields reverted successfully.");
+    await screen.findByRole("button", { name: /Edit transaction: Original commute/ });
+    expect(query).toHaveFocus();
+    expect(query).toHaveValue("draft search");
+  });
+
+  it("ignores a pending revert after logout", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<typeof original>();
+    apiMocks.revertTransaction.mockReturnValue(pending.promise);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Revert imported fields:/ }));
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    await act(async () => pending.resolve(original));
+    expect(screen.getByRole("heading", { name: "FinanceTracker" })).toBeInTheDocument();
+    expect(screen.queryByText("Imported fields reverted successfully.")).not.toBeInTheDocument();
+    expect(apiMocks.getTransactions).toHaveBeenCalledTimes(1);
   });
 });

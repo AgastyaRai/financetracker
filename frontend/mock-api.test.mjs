@@ -74,7 +74,7 @@ describe("preview transaction editing", () => {
     expect(response.status).toBe(200);
     const updated = await (await fetch(`${base}/transactions`)).json();
     expect(updated).toHaveLength(original.length);
-    expect(updated.find((row) => row.id === transaction.id)).toEqual({ id: transaction.id, ...input, amount: "-50.00" });
+    expect(updated.find((row) => row.id === transaction.id)).toEqual({ id: transaction.id, ...input, amount: "-50.00", can_revert: false });
     const progress = await (await fetch(`${base}/budgets/progress?month=2026-10-01`)).json();
     expect(progress.find((row) => row.category === "Dining").spent).toBe("0.00");
     expect(progress.find((row) => row.category === "Groceries").spent).toBe("200.55");
@@ -95,7 +95,41 @@ describe("preview transaction editing", () => {
     server = createMockApiServer({ transactions, budgets: [] });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${server.address().port}/api`;
-    expect(await (await fetch(`${base}/transactions`)).json()).toEqual(transactions);
+    expect(await (await fetch(`${base}/transactions`)).json()).toEqual(transactions.map((transaction) => ({ ...transaction, can_revert: false })));
     expect(await (await fetch(`${base}/budgets`)).json()).toEqual([]);
+  });
+});
+
+
+describe("preview imported transaction revert", () => {
+  it("restores only the supplied import fields and derives eligibility from the immutable baseline", async () => {
+    const transaction = { id: "imported", amount: "75.50", kind: "Income", category: "Edited", date: "2026-10-12", description: "Edited import" };
+    const original = { kind: "Expense", category: null, description: "Original import" };
+    const importedDetails = { imported: original };
+    server = createMockApiServer({ transactions: [transaction], budgets: [], importedDetails });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${server.address().port}/api`;
+    expect((await (await fetch(`${base}/transactions`)).json())[0].can_revert).toBe(true);
+    const response = await fetch(`${base}/transactions/imported/revert`, { method: "POST" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(original);
+    expect(await (await fetch(`${base}/transactions`)).json()).toEqual([{ ...transaction, ...original, can_revert: false }]);
+    const edit = await fetch(`${base}/transactions/imported`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...transaction, description: "Second edit" }),
+    });
+    expect(edit.status).toBe(200);
+    expect((await (await fetch(`${base}/transactions`)).json())[0].can_revert).toBe(true);
+    expect(await (await fetch(`${base}/transactions/imported/revert`, { method: "POST" })).json()).toEqual(original);
+    expect(importedDetails).toEqual({ imported: original });
+  });
+
+  it("does not fabricate an original for a manual transaction", async () => {
+    const transaction = { id: "manual", amount: "10.00", kind: "Income", category: null, date: "2026-10-12", description: "Manual" };
+    server = createMockApiServer({ transactions: [transaction], budgets: [] });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${server.address().port}/api`;
+    expect((await fetch(`${base}/transactions/manual/revert`, { method: "POST" })).status).toBe(404);
+    expect(await (await fetch(`${base}/transactions`)).json()).toEqual([{ ...transaction, can_revert: false }]);
   });
 });

@@ -68,6 +68,15 @@ pub struct Transaction {
     pub category: Option<String>,
     pub date: chrono::NaiveDate,
     pub description: Option<String>,
+    #[serde(default)]
+    pub can_revert: bool,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct RevertedTransactionFields {
+    pub kind: TransactionKind,
+    pub category: Option<String>,
+    pub description: Option<String>,
 }
 
 // struct for adding/updating a budget (request body - no user_id)

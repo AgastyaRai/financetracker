@@ -13,6 +13,7 @@ import type { Transaction, TransactionInput, TransactionKind, Budget, BudgetProg
 import {
   addTransaction,
   updateTransaction,
+  revertTransaction,
   getTransactions,
   loginUser,
   registerUser,
@@ -121,6 +122,7 @@ export default function App() {
   const [loadingTx, setLoadingTx] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [submittingEdit, setSubmittingEdit] = useState(false);
+  const [revertingTransactionId, setRevertingTransactionId] = useState<string | null>(null);
   const [editStatus, setEditStatus] = useState<StatusMessage | null>(null);
 
   // Add transaction form state
@@ -172,6 +174,7 @@ export default function App() {
     setTransactions([]);
     setEditingTransaction(null);
     setSubmittingEdit(false);
+    setRevertingTransactionId(null);
     setEditStatus(null);
     activeSemanticSearch.current = null;
     setBudgets([]);
@@ -496,28 +499,48 @@ export default function App() {
   }
 
   async function handleUpdateTransaction(input: TransactionInput) {
-    if (!isAuthenticated || submittingEdit || !editingTransaction) return;
+    if (editingTransaction) await handleTransactionWrite(editingTransaction, input);
+  }
+
+  async function handleRevertTransaction(transaction: Transaction) {
+    if (editingTransaction || !transaction.can_revert) return;
+    await handleTransactionWrite(transaction);
+  }
+
+  async function handleTransactionWrite(transaction: Transaction, input?: TransactionInput) {
+    if (!isAuthenticated || submittingEdit) return;
     setEditStatus(null);
-    if (!input.amount.trim() || !Number.isFinite(Number(input.amount)) || Number(input.amount) <= 0) {
+    if (input && (!input.amount.trim() || !Number.isFinite(Number(input.amount)) || Number(input.amount) <= 0)) {
       setEditStatus({ text: "Amount must be greater than zero", type: "error" });
       return;
     }
-    if (!input.date) {
+    if (input && !input.date) {
       setEditStatus({ text: "Date is required", type: "error" });
       return;
     }
 
-    const transactionId = editingTransaction.id;
+    const transactionId = transaction.id;
+    const isRevert = !input;
     const isCurrentSession = captureSession();
+    let savedInput: TransactionInput;
     setSubmittingEdit(true);
+    setRevertingTransactionId(isRevert ? transactionId : null);
     setTransactionsStatus(null);
     try {
-      await updateTransaction(transactionId, input);
+      if (input) {
+        await updateTransaction(transactionId, input);
+        savedInput = input;
+      } else {
+        const originalFields = await revertTransaction(transactionId);
+        savedInput = { amount: transaction.amount, date: transaction.date, ...originalFields };
+      }
       if (!isCurrentSession()) return;
     } catch (e: unknown) {
       if (isCurrentSession()) {
-        setEditStatus({ text: errorMessage(e), type: "error" });
+        if (isRevert) setTransactionsStatus({ text: errorMessage(e), type: "error" });
+        else setEditStatus({ text: errorMessage(e), type: "error" });
         setSubmittingEdit(false);
+        setRevertingTransactionId(null);
       }
       return;
     }
@@ -526,16 +549,16 @@ export default function App() {
     requestVersions.current.transactions++;
     requestVersions.current.search++;
     setTransactions((current) => {
-      const updated = { id: transactionId, ...input };
+      const updated = { id: transactionId, ...savedInput, ...(isRevert ? { can_revert: false } : {}) };
       const next = current.some((transaction) => transaction.id === transactionId)
-        ? current.map((transaction) => transaction.id === transactionId ? { ...transaction, ...input } : transaction)
+        ? current.map((transaction) => transaction.id === transactionId ? { ...transaction, ...updated } : transaction)
         : [...current, updated];
       return next.sort((a, b) => b.date.localeCompare(a.date));
     });
     setSemanticResults(null);
     setSearchingSemantic(false);
     setEditingTransaction(null);
-    setTransactionsStatus({ text: "Transaction updated successfully.", type: "success" });
+    setTransactionsStatus({ text: isRevert ? "Imported fields reverted successfully." : "Transaction updated successfully.", type: "success" });
 
     const refreshMonth = selectedMonthStartRef.current;
     const refreshes = [refreshTransactions(), refreshBudgets(refreshMonth)];
@@ -557,11 +580,12 @@ export default function App() {
     });
     if (failure?.status === "rejected") {
       setTransactionsStatus({
-        text: `Transaction was updated, but the dashboard could not refresh: ${errorMessage(failure.reason)}`,
+        text: `Transaction was ${isRevert ? "reverted" : "updated"}, but the dashboard could not refresh: ${errorMessage(failure.reason)}`,
         type: "error",
       });
     }
     setSubmittingEdit(false);
+    setRevertingTransactionId(null);
   }
 
   async function handleSaveBudget() {
@@ -738,6 +762,7 @@ export default function App() {
         editingTransaction={editingTransaction} submittingEdit={submittingEdit} editStatus={editStatus}
         startEditingTransaction={startEditingTransaction} cancelEditingTransaction={cancelEditingTransaction}
         handleUpdateTransaction={handleUpdateTransaction}
+        handleRevertTransaction={handleRevertTransaction} revertingTransactionId={revertingTransactionId}
       />
     </div>
   );

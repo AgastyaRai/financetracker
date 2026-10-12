@@ -7,9 +7,10 @@ export type Transaction = {
   category: string | null;
   date: string; // "YYYY-MM-DD"
   description: string | null;
+  can_revert?: boolean;
 };
 
-export type TransactionInput = Omit<Transaction, "id">;
+export type TransactionInput = Omit<Transaction, "id" | "can_revert">;
 
 export type LoginResponse = { 
   user_id: string;

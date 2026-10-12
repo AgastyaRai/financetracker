@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getTransactions, loginUser, setUnauthorizedCallback, updateTransaction } from "./api";
+import { getTransactions, loginUser, setUnauthorizedCallback, updateTransaction, revertTransaction } from "./api";
 
 describe("API requests", () => {
   const fetchMock = vi.fn();
@@ -106,5 +106,22 @@ describe("transaction updates", () => {
       method: "PUT", body: JSON.stringify(input),
       headers: expect.objectContaining({ Authorization: "Bearer edit-token" }),
     }));
+  });
+});
+
+
+describe("imported transaction revert request", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts only the transaction id and receives the original fields", async () => {
+    const original = { kind: "Expense", category: null, description: "Original" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(original), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    localStorage.setItem("access_token", "revert-token");
+    await expect(revertTransaction("imported/id")).resolves.toEqual(original);
+    expect(fetchMock).toHaveBeenCalledWith("/api/transactions/imported%2Fid/revert", expect.objectContaining({
+      method: "POST", headers: expect.objectContaining({ Authorization: "Bearer revert-token" }),
+    }));
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
   });
 });

@@ -24,10 +24,12 @@ type Props = {
   startEditingTransaction: (transaction: Transaction) => void;
   cancelEditingTransaction: () => void;
   handleUpdateTransaction: (input: TransactionInput) => Promise<void>;
+  handleRevertTransaction: (transaction: Transaction) => Promise<void>;
+  revertingTransactionId: string | null;
 };
 
 export default function TransactionsSection({
-  semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction
+  semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction, handleRevertTransaction, revertingTransactionId
 }: Props) {
   const shownSemanticTransactions = semanticResults?.transactions ?? null;
   const shownRows: Array<{ transaction: Transaction; similarity?: number }> = shownSemanticTransactions
@@ -40,12 +42,17 @@ export default function TransactionsSection({
   const queryInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (editingTransaction || !editButtonRef.current) return;
+    if (editingTransaction || submittingEdit || !editButtonRef.current) return;
+    const activeElement = document.activeElement;
+    if (activeElement && activeElement !== document.body && !activeElement.closest(".transactionRowActions")) {
+      editButtonRef.current = null;
+      return;
+    }
     const button = rowActionRefs.current.get(editButtonRef.current);
     if (button?.isConnected && !button.disabled) button.focus();
     else queryInputRef.current?.focus();
     editButtonRef.current = null;
-  }, [editingTransaction]);
+  }, [editingTransaction, submittingEdit]);
 
   function editButton(transaction: Transaction) {
     return (
@@ -64,6 +71,27 @@ export default function TransactionsSection({
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="m16 4 4 4-11 11H5v-4L16 4Z" />
           <path d="m14 6 4 4" />
+        </svg>
+      </button>
+    );
+  }
+
+  function revertButton(transaction: Transaction) {
+    if (!transaction.can_revert) return null;
+    const pending = revertingTransactionId === transaction.id;
+    return (
+      <button
+        type="button" className="transactionRowAction" disabled={submittingEdit || editingTransaction !== null}
+        title={pending ? "Reverting imported fields…" : "Revert imported kind, category, and description"}
+        aria-label={`${pending ? "Reverting" : "Revert"} imported fields: ${transaction.description || transaction.category || transaction.kind}, ${transaction.date}`}
+        onClick={() => {
+          editButtonRef.current = transaction.id;
+          void handleRevertTransaction(transaction);
+        }}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h9a6 6 0 0 1 0 12" />
+          <path d="m8 3-4 4 4 4" />
         </svg>
       </button>
     );
@@ -172,7 +200,7 @@ export default function TransactionsSection({
                   <td>{t.description ?? "-"}</td>
                   {shownSemanticTransactions && <td>{similarity === undefined ? "-" : `${(similarity * 100).toFixed(1)}%`}</td>}
                   <td style={{ textAlign: "right" }}>{money(Number(t.amount))}</td>
-                  <td className="transactionRowActions">{editButton(t)}</td>
+                  <td className="transactionRowActions"><div className="transactionEditActions">{editButton(t)}{revertButton(t)}</div></td>
                 </tr>
               ))}
             </tbody>
