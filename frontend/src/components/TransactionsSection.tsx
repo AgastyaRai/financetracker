@@ -37,6 +37,7 @@ export default function TransactionsSection({
     : transactions.map((transaction) => ({ transaction }));
   const rows = editingTransaction && !shownRows.some((row) => row.transaction.id === editingTransaction.id)
     ? [{ transaction: editingTransaction }, ...shownRows] : shownRows;
+  const hasMultipleRowActions = editingTransaction !== null || rows.some(({ transaction }) => transaction.can_revert);
   const editButtonRef = useRef<string | null>(null);
   const rowActionRefs = useRef(new Map<string, HTMLButtonElement>());
   const queryInputRef = useRef<HTMLInputElement | null>(null);
@@ -162,7 +163,7 @@ export default function TransactionsSection({
       ) : rows.length === 0 ? (
         <p className="muted">{shownSemanticTransactions ? "No matching transactions found." : "No transactions yet."}</p>
       ) : (
-        <div className={`tableScroll transactionTable${shownSemanticTransactions ? " transactionSemanticTable" : ""}`} tabIndex={0} role="region" aria-label="Transactions table">
+        <div className={`tableScroll transactionTable${shownSemanticTransactions ? " transactionSemanticTable" : ""}${hasMultipleRowActions ? " transactionTableMultipleActions" : ""}`} tabIndex={0} role="region" aria-label="Transactions table">
           <table>
             <colgroup>
               <col className="transactionDateColumn" />
@@ -180,8 +181,8 @@ export default function TransactionsSection({
                 <th>Category</th>
                 <th>Description</th>
                 {shownSemanticTransactions && <th>Similarity</th>}
-                <th style={{ textAlign: "right" }}>Amount</th>
-                <th>Actions</th>
+                <th>Amount</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
@@ -199,7 +200,7 @@ export default function TransactionsSection({
                   <td>{t.category ?? "-"}</td>
                   <td>{t.description ?? "-"}</td>
                   {shownSemanticTransactions && <td>{similarity === undefined ? "-" : `${(similarity * 100).toFixed(1)}%`}</td>}
-                  <td style={{ textAlign: "right" }}>{money(Number(t.amount))}</td>
+                  <td>{money(Number(t.amount))}</td>
                   <td className="transactionRowActions"><div className="transactionEditActions">{editButton(t)}{revertButton(t)}</div></td>
                 </tr>
               ))}

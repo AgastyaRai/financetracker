@@ -806,7 +806,7 @@ tbody tr:nth-child(odd){
 .transactionCategoryColumn{ width: 132px; }
 .transactionSimilarityColumn{ width: 76px; }
 .transactionAmountColumn{ width: 106px; }
-.transactionActionsColumn{ width: 70px; }
+.transactionActionsColumn{ width: var(--transaction-actions-width); }
 .transactionRowActions{ text-align: center; padding: 8px 4px; }
 
 .transactionRowAction{
@@ -850,12 +850,13 @@ tbody tr:nth-child(odd){
 .transactionEditingRow td:last-child{ padding-inline: 4px; }
 .transactionEditingRow input,
 .transactionEditingRow select{ min-width: 0; min-height: 36px; padding: 7px 8px; font-size: 13px; }
-.transactionTable{ scroll-padding-inline-end: 70px; }
+.transactionTable{ --transaction-actions-width: 40px; scroll-padding-inline-end: var(--transaction-actions-width); }
+.transactionTableMultipleActions{ --transaction-actions-width: 70px; }
 
 @media (max-width: 600px){
   .transactionDateColumn{ width: 132px; }
-  .transactionActionsColumn{ width: 100px; }
-  .transactionTable{ scroll-padding-inline-end: 100px; }
+  .transactionTable{ --transaction-actions-width: 56px; }
+  .transactionTableMultipleActions{ --transaction-actions-width: 100px; }
   .transactionRowAction{ width: 44px; min-height: 44px; }
   .transactionEditingRow input,
   .transactionEditingRow select{ min-height: 44px; }
