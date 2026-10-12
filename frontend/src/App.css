@@ -668,11 +668,11 @@ tbody tr:nth-child(odd){
   .analyticsStat{ min-width: 0; padding: 8px; }
   .analyticsStat strong{ font-size: 12px; }
   .chartFrame{ padding: 10px 8px 4px; }
-  .lineChartScale{ display: none; }
+  .lineChartScale{ display: block; }
   .lineChartDayLabel,
   .lineChartEndpointValue,
   .categoryBarValue,
-  .categoryBarLabel{ font-size: 28px; }
+  .categoryBarLabel{ font-size: 11px; }
   .budgetTotals{ width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .budgetTotals span{ min-width: 0; }
   .budgetProgressHeader{ align-items: flex-start; }
@@ -747,4 +747,52 @@ tbody tr:nth-child(odd){
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.chartViewport{
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chartViewport:focus-visible,
+.chartDetails summary:focus-visible{
+  outline: 2px solid var(--accent2);
+  outline-offset: -2px;
+}
+
+.chartScrollHint{
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.chartDetails{
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chartDetails summary{
+  min-height: 44px;
+  padding: 12px 4px;
+  cursor: pointer;
+}
+
+.chartDetails table{
+  width: 100%;
+  table-layout: fixed;
+  margin: 4px 0 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.chartDetails th,
+.chartDetails td{
+  overflow-wrap: anywhere;
+}
+
+.chartDetails th:last-child,
+.chartDetails td:last-child{
+  width: 40%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }

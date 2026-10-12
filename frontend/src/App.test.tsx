@@ -713,3 +713,74 @@ describe("authentication request lifecycle", () => {
     expect(screen.getAllByRole("button", { name: "Login" })[1]).toBeEnabled();
   });
 });
+
+describe("responsive chart data", () => {
+  const fullCategory = "Groceries and household supplies";
+
+  beforeEach(() => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 180_000));
+    apiMocks.getTransactions.mockResolvedValue([
+      { id: "chart-income", amount: "100.00", kind: "Income", category: "Pay", date: monthValue() + "-05", description: null },
+      { id: "chart-expense", amount: "-25.00", kind: "Expense", category: fullCategory, date: monthValue() + "-10", description: null },
+    ]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the available width when chart containers resize", async () => {
+    const observers: Array<{ callback: ResizeObserverCallback; target: Element; observer: ResizeObserver }> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) { this.callback = callback; }
+      observe(target: Element) {
+        observers.push({ callback: this.callback, target, observer: this as unknown as ResizeObserver });
+      }
+      disconnect() {}
+      unobserve() {}
+    });
+    render(<App />);
+    const netChart = await screen.findByRole("img", { name: "Cumulative net chart" });
+    const categoryChart = await screen.findByRole("img", { name: "Spending by category chart" });
+    await act(async () => {
+      for (const { callback, target, observer } of observers) {
+        callback([{ target, contentRect: { width: 280 } } as ResizeObserverEntry], observer);
+      }
+    });
+    expect(netChart).toHaveAttribute("viewBox", "0 0 280 190");
+    expect(categoryChart).toHaveAttribute("viewBox", "0 0 280 210");
+  });
+
+  it("describes actual balances and full category totals for assistive technology", async () => {
+    render(<App />);
+    const netChart = await screen.findByRole("img", { name: "Cumulative net chart" });
+    const categoryChart = await screen.findByRole("img", { name: "Spending by category chart" });
+    expect(netChart).toHaveAccessibleDescription(expect.stringContaining("$75.00"));
+    expect(netChart).toHaveAccessibleDescription(expect.stringContaining("$100.00"));
+    expect(categoryChart).toHaveAccessibleDescription(fullCategory + ": $25.00.");
+  });
+
+  it("offers exact category totals without shortening category names", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("img", { name: "Spending by category chart" });
+    await user.click(screen.getByText("Category totals", { exact: true }));
+    const table = screen.getByRole("table", { name: "Spending category totals" });
+    expect(within(table).getByText(fullCategory)).toBeInTheDocument();
+    expect(within(table).getByText("$25.00")).toBeInTheDocument();
+  });
+
+  it("offers daily balances with the same signed values shown in the chart", async () => {
+    const user = userEvent.setup();
+    apiMocks.getTransactions.mockResolvedValue([
+      { id: "only-expense", amount: "25.00", kind: "Expense", category: fullCategory, date: monthValue() + "-01", description: null },
+    ]);
+    render(<App />);
+    await screen.findByRole("img", { name: "Cumulative net chart" });
+    await user.click(screen.getByText("Daily balances", { exact: true }));
+    const table = screen.getByRole("table", { name: "Daily cumulative net balances" });
+    const firstDay = within(table).getByText("Day 1").closest("tr") as HTMLElement;
+    expect(within(firstDay).getByText("-$25.00")).toBeInTheDocument();
+  });
+});

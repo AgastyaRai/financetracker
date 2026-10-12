@@ -3,7 +3,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const appSource = readFileSync("src/App.tsx", "utf8");
+const appSource = [
+  "src/App.tsx", "src/components/Charts.tsx", "src/components/AnalyticsSection.tsx",
+  "src/components/BudgetProgressSection.tsx",
+].map((path) => readFileSync(path, "utf8")).join("\n");
 const appCss = readFileSync("src/App.css", "utf8");
 const indexCss = readFileSync("src/index.css", "utf8");
 

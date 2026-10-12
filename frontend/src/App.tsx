@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import "./App.css";
+import type { StatusMessage } from "./components/StatusMessageView";
+import AuthScreen from "./components/AuthScreen";
+import TransactionForm from "./components/TransactionForm";
+import SummaryCard from "./components/SummaryCard";
+import AnalyticsSection from "./components/AnalyticsSection";
+import BudgetProgressSection from "./components/BudgetProgressSection";
+import BudgetEditor from "./components/BudgetEditor";
+import TransactionsSection from "./components/TransactionsSection";
+import { useRequestLifecycle } from "./hooks/useRequestLifecycle";
 import type { Transaction, TransactionInput, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 import {
   addTransaction,
@@ -12,29 +21,13 @@ import {
   setUnauthorizedCallback,
   semanticSearchTransactions,
 } from "./api";
-import { budgetPaceStatus, monthProgressPercent } from "./budget-status";
-import { buildDayTicks, buildLineChartScale } from "./chart-scale";
+import { monthProgressPercent } from "./budget-status";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
 type AuthMode = "login" | "register";
-type StatusMessage = {
-  text: string;
-  type: "error" | "success";
-};
-
-function StatusMessageView({ message }: { message: StatusMessage | null }) {
-  if (!message) return null;
-
-  return (
-    <p className={`status ${message.type}`} role={message.type === "error" ? "alert" : "status"}>
-      {message.text}
-    </p>
-  );
-}
-
 function localDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -70,290 +63,6 @@ function monthInputLabel(monthInput: string) {
     month: "long",
     year: "numeric",
   }).format(new Date(year, month - 1, 1));
-}
-
-function money(n: number) {
-  if (!Number.isFinite(n)) return "$0.00";
-  const sign = n < 0 ? "-" : "";
-  return `${sign}$${Math.abs(n).toFixed(2)}`;
-}
-
-function axisMoney(n: number) {
-  const sign = n < 0 ? "-" : "";
-  return `${sign}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-}
-
-/* ------------ Simple SVG Charts (no libraries) ------------ */
-
-function LineChart({ values, height = 160 }: { values: number[]; height?: number }) {
-  const w = 900;
-  const h = height;
-
-  if (values.length === 0) return <div className="muted">No data.</div>;
-
-  const dataMin = Math.min(...values);
-  const dataMax = Math.max(...values);
-  const scale = buildLineChartScale(values);
-  const chartMin = scale.min;
-  const chartMax = scale.max;
-  const padTop = 18;
-  const padBottom = 32;
-  const padLeft = 66;
-  const padRight = 24;
-
-  const innerW = w - padLeft - padRight;
-  const innerH = h - padTop - padBottom;
-
-  const xStep = values.length === 1 ? 0 : innerW / (values.length - 1);
-
-  const toX = (i: number) => padLeft + i * xStep;
-  const toY = (v: number) => {
-    const t = (v - chartMin) / (chartMax - chartMin);
-    return padTop + (1 - t) * innerH;
-  };
-
-  const points = values.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
-  const lastIndex = values.length - 1;
-  const lastValue = values[lastIndex];
-  const lastX = toX(lastIndex);
-  const lastY = toY(lastValue);
-  const lineColor = lastValue >= 0 ? "#4ade80" : "#ff5c7a";
-  const areaBaseY = dataMin >= 0
-    ? padTop + innerH
-    : dataMax <= 0
-      ? padTop
-      : toY(0);
-  const areaPoints = `${padLeft},${areaBaseY} ${points} ${lastX},${areaBaseY}`;
-  const yTicks = [...scale.ticks].reverse();
-  const dayTicks = buildDayTicks(values.length);
-
-  return (
-    <svg
-      role="img"
-      aria-label="Cumulative net chart"
-      viewBox={`0 0 ${w} ${h}`}
-      width="100%"
-      height={h}
-      style={{ display: "block" }}
-    >
-      <title>Cumulative net for the selected month</title>
-      <defs>
-        <linearGradient id="lineAreaGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
-          <stop offset="100%" stopColor={lineColor} stopOpacity="0.01" />
-        </linearGradient>
-      </defs>
-      <line
-        className="lineChartAxis"
-        x1={padLeft}
-        y1={padTop}
-        x2={padLeft}
-        y2={padTop + innerH}
-      />
-      <line
-        className="lineChartAxis"
-        x1={padLeft}
-        y1={padTop + innerH}
-        x2={padLeft + innerW}
-        y2={padTop + innerH}
-      />
-      {yTicks.map((tick) => (
-        <g key={tick}>
-          <line
-            className="lineChartGrid"
-            x1={padLeft}
-            y1={toY(tick)}
-            x2={padLeft + innerW}
-            y2={toY(tick)}
-          />
-          <line
-            className="lineChartTick"
-            x1={padLeft - 5}
-            y1={toY(tick)}
-            x2={padLeft}
-            y2={toY(tick)}
-          />
-          <text
-            className="lineChartScale"
-            x={padLeft - 10}
-            y={toY(tick) + 4}
-            textAnchor="end"
-          >
-            {axisMoney(tick)}
-          </text>
-        </g>
-      ))}
-      {dataMin < 0 && dataMax > 0 ? (
-        <line
-          x1={padLeft}
-          y1={toY(0)}
-          x2={padLeft + innerW}
-          y2={toY(0)}
-          stroke="rgba(255,255,255,0.30)"
-        />
-      ) : null}
-      <polygon points={areaPoints} fill="url(#lineAreaGrad)" />
-      <polyline
-        fill="none"
-        stroke={lineColor}
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        points={points}
-      />
-      <circle className="lineChartEndpoint" cx={lastX} cy={lastY} r="4" fill={lineColor} />
-      <text
-        className="lineChartEndpointValue"
-        x={lastX - 8}
-        y={lastY < padTop + 22 ? lastY + 22 : lastY - 10}
-        textAnchor="end"
-        fill={lineColor}
-        fontSize="12"
-        fontWeight="800"
-      >
-        {money(lastValue)}
-      </text>
-      {dayTicks.map((index) => (
-        <g key={index}>
-          <line
-            className="lineChartTick"
-            x1={toX(index)}
-            y1={padTop + innerH}
-            x2={toX(index)}
-            y2={padTop + innerH + 5}
-          />
-          <text
-            className="lineChartDayLabel"
-            x={toX(index)}
-            y={padTop + innerH + 24}
-            textAnchor={index === 0 ? "start" : index === lastIndex ? "end" : "middle"}
-          >
-            Day {index + 1}
-          </text>
-        </g>
-      ))}
-    </svg>
-  );
-}
-
-type BarDatum = { label: string; value: number };
-
-function BarChart({
-  data,
-  height = 220,
-}: {
-  data: BarDatum[];
-  height?: number;
-}) {
-  const w = 900;
-  const h = height;
-
-  if (data.length === 0) return <div className="muted">No data.</div>;
-
-  const max = Math.max(...data.map((d) => d.value), 1);
-
-  const n = data.length;
-  const rotateLabels = n > 4;
-  const padTop = 22;
-  const padBottom = rotateLabels ? 62 : 46; // space for rotated labels
-  const padLeft = 18;
-  const padRight = 12;
-
-  const innerW = w - padLeft - padRight;
-  const innerH = h - padTop - padBottom;
-
-  const band = innerW / n;
-  const barW = Math.min(120, Math.max(24, band * 0.56));
-
-  const yFor = (v: number) => padTop + innerH * (1 - v / max);
-  const hFor = (v: number) => innerH * (v / max);
-
-  return (
-    <svg
-      role="img"
-      aria-label="Spending by category chart"
-      viewBox={`0 0 ${w} ${h}`}
-      width="100%"
-      height={h}
-      style={{ display: "block" }}
-    >
-      <title>Spending by category for the selected month</title>
-
-      {/* gridlines */}
-      {[0.25, 0.5, 0.75, 1].map((t) => {
-        const y = padTop + innerH * (1 - t);
-        return (
-          <line
-            key={t}
-            x1={padLeft}
-            y1={y}
-            x2={padLeft + innerW}
-            y2={y}
-            stroke="rgba(255,255,255,0.06)"
-          />
-        );
-      })}
-
-      {/* baseline */}
-      <line
-        x1={padLeft}
-        y1={padTop + innerH}
-        x2={padLeft + innerW}
-        y2={padTop + innerH}
-        stroke="rgba(255,255,255,0.12)"
-      />
-
-      {data.map((d, i) => {
-        const xCenter = padLeft + band * i + band / 2;
-        const x = xCenter - barW / 2;
-        const y = yFor(d.value);
-        const bh = hFor(d.value);
-
-        // label (shorten if long)
-        const label = d.label.length > 14 ? d.label.slice(0, 12) + "…" : d.label;
-
-        return (
-          <g key={d.label}>
-            {/* bar */}
-            <rect
-              className="categoryBar"
-              x={x}
-              y={y}
-              width={barW}
-              height={bh}
-              rx={8}
-              fill="var(--accent)"
-              opacity={0.94}
-            />
-            {/* value on top */}
-            <text
-              className="categoryBarValue"
-              x={xCenter}
-              y={y - 6}
-              textAnchor="middle"
-              fontSize="12"
-              fill="var(--accent2)"
-              style={{ fontWeight: 700 }}
-            >
-              {money(d.value)}
-            </text>
-            {/* rotated label */}
-            <text
-              className="categoryBarLabel"
-              x={xCenter}
-              y={padTop + innerH + (rotateLabels ? 34 : 28)}
-              textAnchor="middle"
-              fontSize="12"
-              fill="rgba(244,244,245,0.90)"
-              transform={rotateLabels ? `rotate(-25 ${xCenter} ${padTop + innerH + 34})` : undefined}
-            >
-              {label}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
 }
 
 /* ------------------------------ App ------------------------------ */
@@ -393,7 +102,6 @@ export default function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(hasValidStoredSession);
   const logoutTimerRef = useRef<number | null>(null);
-  const requestVersions = useRef({ session: 0, transactions: 0, budgets: 0, search: 0 });
 
   // Auth form state
   const [username, setUsername] = useState("");
@@ -439,19 +147,7 @@ export default function App() {
   const [submittingTransaction, setSubmittingTransaction] = useState(false);
   const [submittingBudget, setSubmittingBudget] = useState(false);
 
-  // Responses belong to the session and request that started them, even after logout or Clear.
-  const captureSession = useCallback(() => {
-    const session = requestVersions.current.session;
-    const token = localStorage.getItem("access_token");
-    return () => session === requestVersions.current.session
-      && token === localStorage.getItem("access_token");
-  }, []);
-
-  const beginRequest = useCallback((kind: "transactions" | "budgets" | "search") => {
-    const version = ++requestVersions.current[kind];
-    const isCurrentSession = captureSession();
-    return () => isCurrentSession() && version === requestVersions.current[kind];
-  }, [captureSession]);
+  const { requestVersions, captureSession, beginRequest } = useRequestLifecycle();
 
   // Logout function - clear all auth state
   const logout = useCallback((message?: string, clearStoredSession = true) => {
@@ -492,7 +188,7 @@ export default function App() {
     setSubmittingBudget(false);
     setSearchingSemantic(false);
     setAuthStatus(message ? { text: message, type: "error" } : null);
-  }, []);
+  }, [requestVersions]);
 
   // Set up auto-logout timer based on JWT expiry
   const setupAutoLogout = useCallback((token: string) => {
@@ -534,7 +230,7 @@ export default function App() {
       setUnauthorizedCallback(null);
       versions.session++;
     };
-  }, [logout]);
+  }, [logout, requestVersions]);
 
   // Set up auto-logout timer on mount if already authenticated
   useEffect(() => {
@@ -864,97 +560,17 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div className="container">
-        <h1>FinanceTracker</h1>
-
-        <div className="tabs">
-          <button type="button" className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>
-            Login
-          </button>
-          <button type="button" className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>
-            Register
-          </button>
-        </div>
-
-        {mode === "register" ? (
-          <div className="card">
-            <form className="formGrid" onSubmit={(e) => { e.preventDefault(); void handleRegister(); }}>
-              <label htmlFor="register-username">Username</label>
-              <input
-                id="register-username"
-                autoComplete="username"
-                required
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-
-              <label htmlFor="register-email">Email</label>
-              <input
-                id="register-email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-
-              <label htmlFor="register-password">Password</label>
-              <input
-                id="register-password"
-                type="password"
-                autoComplete="new-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-
-              <div className="fullRow">
-                <button type="submit" disabled={submittingAuth}>
-                  {submittingAuth ? "Creating account…" : "Create account"}
-                </button>
-              </div>
-            </form>
-          </div>
-        ) : (
-          <div className="card">
-            <form className="formGrid" onSubmit={(e) => { e.preventDefault(); void handleLogin(); }}>
-              <label htmlFor="login-identifier">Username or Email</label>
-              <input
-                id="login-identifier"
-                autoComplete="username"
-                required
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-              />
-
-              <label htmlFor="login-password">Password</label>
-              <input
-                id="login-password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-
-              <div className="fullRow">
-                <button type="submit" disabled={submittingAuth}>
-                  {submittingAuth ? "Logging in…" : "Login"}
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-
-        <StatusMessageView message={authStatus} />
-      </div>
+      <AuthScreen
+        mode={mode} setMode={setMode}
+        username={username} setUsername={setUsername}
+        email={email} setEmail={setEmail}
+        identifier={identifier} setIdentifier={setIdentifier}
+        password={password} setPassword={setPassword}
+        submittingAuth={submittingAuth} authStatus={authStatus}
+        handleRegister={handleRegister} handleLogin={handleLogin}
+      />
     );
   }
-
-  const totalBudget = progress.reduce((s, p) => s + Number(p.budget_amount || 0), 0);
-  const totalSpent = progress.reduce((s, p) => s + Number(p.spent || 0), 0);
-
-  const shownSemanticTransactions = semanticResults?.transactions ?? null;
 
   return (
     <div className="container">
@@ -970,418 +586,47 @@ export default function App() {
 
       {/* top grid */}
       <div className="grid">
-        <div className="card transactionCard">
-          <h2>Add transaction</h2>
+        <TransactionForm
+          amount={amount} setAmount={setAmount} kind={kind} setKind={setKind}
+          date={date} setDate={setDate} category={category} setCategory={setCategory}
+          description={description} setDescription={setDescription}
+          submittingTransaction={submittingTransaction} transactionStatus={transactionStatus}
+          handleAddTransaction={handleAddTransaction}
+        />
 
-          <form
-            className="formGrid transactionForm"
-            onSubmit={(e) => { e.preventDefault(); void handleAddTransaction(); }}
-          >
-            <label htmlFor="transaction-amount">Amount</label>
-            <input
-              id="transaction-amount"
-              type="number"
-              min="0.01"
-              step="0.01"
-              inputMode="decimal"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-
-            <label htmlFor="transaction-kind">Kind</label>
-            <select
-              id="transaction-kind"
-              value={kind}
-              onChange={(e) => setKind(e.target.value as TransactionKind)}
-            >
-              <option value="Expense">Expense</option>
-              <option value="Income">Income</option>
-            </select>
-
-            <label htmlFor="transaction-date">Date</label>
-            <input
-              id="transaction-date"
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-
-            <label htmlFor="transaction-category">Category (optional)</label>
-            <input
-              id="transaction-category"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            />
-
-            <label htmlFor="transaction-description">Description (optional)</label>
-            <input
-              id="transaction-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-
-            <div className="fullRow formActions">
-              <button type="submit" disabled={submittingTransaction}>
-                {submittingTransaction ? "Adding…" : "Add"}
-              </button>
-              <StatusMessageView message={transactionStatus} />
-            </div>
-          </form>
-        </div>
-
-        <div className="card summaryCard">
-          <div className="sectionHeader summaryHeader">
-            <h2>Summary</h2>
-            <span className="muted">{selectedMonthLabel}</span>
-          </div>
-
-          <div className="summaryMetrics">
-            <div className="metricTile">
-              <span className="metricLabel">Income</span>
-              <strong className="metricValue income">{money(summary.income)}</strong>
-            </div>
-            <div className="metricTile">
-              <span className="metricLabel">Expense</span>
-              <strong className="metricValue expense">{money(summary.expense)}</strong>
-            </div>
-            <div className="metricTile">
-              <span className="metricLabel">Net</span>
-              <strong className="metricValue">{money(summary.net)}</strong>
-            </div>
-          </div>
-        </div>
+        <SummaryCard selectedMonthLabel={selectedMonthLabel} summary={summary} />
       </div>
 
       {/* 1) GENERAL CHARTS FIRST */}
-      <div className="card dashboardSection">
-        <div className="sectionHeader">
-          <h2 style={{ margin: 0 }}>Analytics</h2>
-          <div className="sectionHeaderControls">
-            <label htmlFor="analytics-month" className="muted" style={{ fontWeight: 700 }}>Month</label>
-            <input
-              id="analytics-month"
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => changeSelectedMonth(e.target.value)}
-              style={{ maxWidth: 200 }}
-            />
-          </div>
-        </div>
-
-        {monthTx.length === 0 ? (
-          <div className="emptyState">
-            <strong>No activity for this month yet.</strong>
-            <span>Add a transaction or choose a different month to see analytics.</span>
-          </div>
-        ) : (
-          <>
-            {/* net line chart */}
-            <div className="chartSection">
-              <div className="sectionHeader baseline chartHeading">
-                <h3>Cumulative net</h3>
-                <div className="analyticsStats">
-                  <span className="analyticsStat income">
-                    <span>Income</span>
-                    <strong>{money(monthIncomeExpense.income)}</strong>
-                  </span>
-                  <span className="analyticsStat expense">
-                    <span>Expense</span>
-                    <strong>{money(monthIncomeExpense.expense)}</strong>
-                  </span>
-                  <span className="analyticsStat net">
-                    <span>Net</span>
-                    <strong>{money(monthIncomeExpense.net)}</strong>
-                  </span>
-                </div>
-              </div>
-
-              <div className="chartFrame">
-                <LineChart values={cumulativeNetByDay} height={190} />
-              </div>
-            </div>
-
-            {/* REAL bar chart for spending by category */}
-            <div className="chartSection">
-              <h3 className="chartTitle">Spending by category</h3>
-
-              {spendingCategoryChart.length === 0 ? (
-                <div className="emptyState compact">
-                  <strong>No expenses for this month.</strong>
-                  <span>Income activity is still reflected in cumulative net.</span>
-                </div>
-              ) : (
-                <div className="chartFrame">
-                  <BarChart data={spendingCategoryChart} height={210} />
-                </div>
-              )}
-
-              {spendingCategoryChart.length > 0 ? (
-                <p className="muted chartCaption">
-                  Showing top categories (by total spend) for readability.
-                </p>
-              ) : null}
-            </div>
-          </>
-        )}
-      </div>
+      <AnalyticsSection
+        selectedMonth={selectedMonth} changeSelectedMonth={changeSelectedMonth}
+        monthTx={monthTx} monthIncomeExpense={monthIncomeExpense}
+        cumulativeNetByDay={cumulativeNetByDay} spendingCategoryChart={spendingCategoryChart}
+      />
 
       {/* 2) BIG BUDGET PROGRESS SECOND */}
-      <div className="card dashboardSection">
-        <div className="sectionHeader baseline">
-          <h2 style={{ margin: 0 }}>Budget progress</h2>
-          <div className="budgetTotals">
-            <span>Total spent <strong>{money(totalSpent)}</strong></span>
-            <span>Total budget <strong>{money(totalBudget)}</strong></span>
-          </div>
-        </div>
-
-        {loadingBudgets ? (
-          <p className="muted" style={{ marginTop: 12 }}>Loading…</p>
-        ) : progress.length === 0 ? (
-          <p className="muted" style={{ marginTop: 12 }}>
-            No progress yet — create budgets for this month, then add expense transactions with matching categories.
-          </p>
-        ) : (
-          <div className="budgetProgressList">
-            {progress.map((p) => {
-              const budget = Number(p.budget_amount);
-              const spent = Number(p.spent);
-              const remaining = Number(p.remaining);
-              const pct = budget > 0 ? (spent / budget) * 100 : 0;
-              const over = pct > 100;
-              const normalizedPct = Math.min(100, Math.max(0, pct));
-              const { tone: budgetTone, label: budgetStatusLabel } = budgetPaceStatus(pct, budgetMonthProgress);
-
-              return (
-                <article key={p.category} className={`budgetProgressItem ${budgetTone}`}>
-                  <div className="budgetProgressHeader">
-                    <div className="budgetCategory">
-                      <strong>{p.category}</strong>
-                      <span className={`budgetStatusBadge ${budgetTone}`}>{budgetStatusLabel}</span>
-                    </div>
-                    <div className="budgetProgressAmount">
-                      <strong>{money(spent)} <span>/</span> {money(budget)}</strong>
-                      <span>{pct.toFixed(0)}% used</span>
-                    </div>
-                  </div>
-
-                  <div
-                    className="budgetTrack"
-                    role="progressbar"
-                    aria-label={`${p.category} budget used`}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(normalizedPct)}
-                    aria-valuetext={`${pct.toFixed(0)}% used`}
-                  >
-                    <div
-                      className={`budgetFill ${budgetTone}`}
-                      style={{
-                        width: `${normalizedPct}%`,
-                        minWidth: spent > 0 ? "8px" : 0,
-                      }}
-                    />
-                  </div>
-
-                  <div className="budgetProgressFooter">
-                    <span>{over ? "Over by" : "Remaining"}</span>
-                    <strong>{money(Math.abs(remaining))}</strong>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      <BudgetProgressSection
+        progress={progress} loadingBudgets={loadingBudgets} budgetMonthProgress={budgetMonthProgress}
+      />
 
       {/* 3) BUDGET EDITOR THIRD */}
-      <div className="card dashboardSection">
-        <h2>Budgets</h2>
-
-        <form
-          className="formGrid budgetForm"
-          onSubmit={(e) => { e.preventDefault(); void handleSaveBudget(); }}
-        >
-          <label htmlFor="budget-month">Month</label>
-          <input
-            id="budget-month"
-            type="month"
-            value={selectedMonth}
-            onChange={(e) => changeSelectedMonth(e.target.value)}
-          />
-
-          <label htmlFor="budget-category">Category</label>
-          <input
-            id="budget-category"
-            value={budgetCategory}
-            onChange={(e) => setBudgetCategory(e.target.value)}
-          />
-
-          <label htmlFor="budget-amount">Amount</label>
-          <input
-            id="budget-amount"
-            type="number"
-            min="0.01"
-            step="0.01"
-            inputMode="decimal"
-            value={budgetAmount}
-            onChange={(e) => setBudgetAmount(e.target.value)}
-          />
-
-          <div className="fullRow">
-            <button type="submit" disabled={submittingBudget}>
-              {submittingBudget ? "Saving…" : "Save budget"}
-            </button>
-            <StatusMessageView message={budgetStatus} />
-          </div>
-        </form>
-
-        <div style={{ marginTop: 18 }}>
-          {loadingBudgets ? (
-            <p className="muted">Loading budgets…</p>
-          ) : budgets.length === 0 ? (
-            <p className="muted">No budgets for this month yet.</p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th style={{ textAlign: "right" }}>Budget</th>
-                </tr>
-              </thead>
-              <tbody>
-                {budgets.map((b, idx) => (
-                  <tr key={idx}>
-                    <td>{b.category}</td>
-                    <td style={{ textAlign: "right" }}>{money(Number(b.amount))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
+      <BudgetEditor
+        selectedMonth={selectedMonth} changeSelectedMonth={changeSelectedMonth}
+        budgetCategory={budgetCategory} setBudgetCategory={setBudgetCategory}
+        budgetAmount={budgetAmount} setBudgetAmount={setBudgetAmount}
+        submittingBudget={submittingBudget} budgetStatus={budgetStatus} handleSaveBudget={handleSaveBudget}
+        loadingBudgets={loadingBudgets} budgets={budgets}
+      />
 
       {/* 4) TRANSACTIONS LAST */}
-      <div className="card">
-        <h2>Transactions</h2>
-
-        <form
-          className="transactionSearch"
-          onSubmit={(e) => { e.preventDefault(); void handleSemanticSearch(); }}
-        >
-          <input
-            aria-label="Semantic search query"
-            value={semanticQuery}
-            onChange={(e) => setSemanticQuery(e.target.value)}
-            maxLength={500}
-            placeholder="Search transactions semantically (e.g. uber, groceries, ride home)"
-            className="searchQuery"
-          />
-
-          <input
-            aria-label="Maximum search results"
-            type="number"
-            min={1}
-            max={50}
-            value={semanticLimit}
-            onChange={(e) => setSemanticLimit(e.target.value)}
-            style={{ width: 90 }}
-          />
-
-          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={includeSummary}
-              onChange={(e) => setIncludeSummary(e.target.checked)}
-            />
-            Summarize with AI
-          </label>
-
-          <div className="searchActions">
-            <button type="submit" disabled={searchingSemantic}>
-              {searchingSemantic ? "Searching..." : "Search"}
-            </button>
-
-            <button type="button" className="buttonSecondary" onClick={clearSemanticSearch}>
-              Clear
-            </button>
-          </div>
-        </form>
-
-        <StatusMessageView message={transactionsStatus} />
-
-        {semanticResults?.summary && (
-          <div className="card" style={{ marginBottom: 14 }}>
-            <h3>AI Summary</h3>
-            <p>{semanticResults.summary}</p>
-          </div>
-        )}
-
-        {shownSemanticTransactions ? (
-          shownSemanticTransactions.length === 0 ? (
-            <p className="muted">No matching transactions found.</p>
-          ) : (
-            <div className="tableScroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Kind</th>
-                    <th>Category</th>
-                    <th>Description</th>
-                    <th>Similarity</th>
-                    <th style={{ textAlign: "right" }}>Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shownSemanticTransactions.map((match) => (
-                    <tr key={match.transaction.id}>
-                      <td>{match.transaction.date}</td>
-                      <td>{match.transaction.kind}</td>
-                      <td>{match.transaction.category ?? "-"}</td>
-                      <td>{match.transaction.description ?? "-"}</td>
-                      <td>{(match.similarity_score * 100).toFixed(1)}%</td>
-                      <td style={{ textAlign: "right" }}>
-                        {money(Number(match.transaction.amount))}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        ) : loadingTx ? (
-          <p className="muted">Loading…</p>
-        ) : transactions.length === 0 ? (
-          <p className="muted">No transactions yet.</p>
-        ) : (
-          <div className="tableScroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Kind</th>
-                  <th>Category</th>
-                  <th>Description</th>
-                  <th style={{ textAlign: "right" }}>Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((t) => (
-                  <tr key={t.id}>
-                    <td>{t.date}</td>
-                    <td>{t.kind}</td>
-                    <td>{t.category ?? "-"}</td>
-                    <td>{t.description ?? "-"}</td>
-                    <td style={{ textAlign: "right" }}>{money(Number(t.amount))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <TransactionsSection
+        semanticQuery={semanticQuery} setSemanticQuery={setSemanticQuery}
+        semanticLimit={semanticLimit} setSemanticLimit={setSemanticLimit}
+        includeSummary={includeSummary} setIncludeSummary={setIncludeSummary}
+        searchingSemantic={searchingSemantic} handleSemanticSearch={handleSemanticSearch}
+        clearSemanticSearch={clearSemanticSearch} transactionsStatus={transactionsStatus}
+        semanticResults={semanticResults} loadingTx={loadingTx} transactions={transactions}
+      />
     </div>
   );
 }
