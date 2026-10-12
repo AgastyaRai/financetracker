@@ -90,7 +90,7 @@ export default function TransactionEditor({ transaction, similarity, showSimilar
               </svg>
             </button>
             <button
-              type="button" className="transactionRowAction" disabled={submitting}
+              type="button" className="transactionRowAction transactionRowActionCancel" disabled={submitting}
               aria-label="Cancel" title="Cancel" onClick={onCancel}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
