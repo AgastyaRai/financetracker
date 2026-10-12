@@ -6,6 +6,7 @@ import type { Budget, SemanticSearchResult, Transaction } from "./types";
 
 const apiMocks = vi.hoisted(() => ({
   addTransaction: vi.fn(),
+  updateTransaction: vi.fn(),
   getBudgetProgress: vi.fn(),
   getBudgets: vi.fn(),
   getTransactions: vi.fn(),
@@ -26,6 +27,7 @@ function tokenWithExpiry(expiryTime: number) {
 beforeEach(() => {
   vi.resetAllMocks();
   apiMocks.addTransaction.mockResolvedValue(undefined);
+  apiMocks.updateTransaction.mockResolvedValue(undefined);
   apiMocks.getBudgetProgress.mockResolvedValue([]);
   apiMocks.getBudgets.mockResolvedValue([]);
   apiMocks.getTransactions.mockResolvedValue([]);
@@ -782,5 +784,267 @@ describe("responsive chart data", () => {
     const table = screen.getByRole("table", { name: "Daily cumulative net balances" });
     const firstDay = within(table).getByText("Day 1").closest("tr") as HTMLElement;
     expect(within(firstDay).getByText("-$25.00")).toBeInTheDocument();
+  });
+});
+
+
+describe("transaction editing", () => {
+  function originalTransaction(): Transaction {
+    return {
+      id: "edit-coffee", amount: "-25.00", kind: "Expense", category: "Food",
+      date: monthValue() + "-10", description: "Coffee",
+    };
+  }
+
+  function editor() {
+    return screen.getByRole("form", { name: "Edit transaction" });
+  }
+
+  async function openEditor(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: /Edit transaction: Coffee/ }));
+    return within(editor());
+  }
+
+  beforeEach(() => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 180_000));
+    apiMocks.getTransactions.mockResolvedValue([originalTransaction()]);
+  });
+
+  it("prefills the existing fields and cancels without writing", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const form = await openEditor(user);
+    expect(form.getByLabelText("Amount")).toHaveValue(25);
+    expect(form.getByLabelText("Amount")).toHaveFocus();
+    expect(form.getByLabelText("Kind")).toHaveValue("Expense");
+    expect(form.getByLabelText("Date")).toHaveValue(monthValue() + "-10");
+    expect(form.getByLabelText("Category (optional)")).toHaveValue("Food");
+    expect(form.getByLabelText("Description (optional)")).toHaveValue("Coffee");
+    await user.clear(form.getByLabelText("Description (optional)"));
+    await user.type(form.getByLabelText("Description (optional)"), "Unsaved draft");
+    await user.click(form.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
+    expect(apiMocks.updateTransaction).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Edit transaction: Coffee/ })).toHaveFocus();
+    expect(screen.getByText("Coffee")).toBeInTheDocument();
+  });
+
+  it("saves all fields and refreshes the selected-month dashboard", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const form = await openEditor(user);
+    await user.clear(form.getByLabelText("Amount"));
+    await user.type(form.getByLabelText("Amount"), "40.50");
+    await user.selectOptions(form.getByLabelText("Kind"), "Income");
+    fireEvent.change(form.getByLabelText("Date"), { target: { value: monthValue() + "-12" } });
+    await user.clear(form.getByLabelText("Category (optional)"));
+    await user.type(form.getByLabelText("Category (optional)"), " Refund ");
+    await user.clear(form.getByLabelText("Description (optional)"));
+    await user.type(form.getByLabelText("Description (optional)"), " Returned coffee ");
+    const updated = {
+      ...originalTransaction(), amount: "40.50", kind: "Income" as const,
+      category: "Refund", date: monthValue() + "-12", description: "Returned coffee",
+    };
+    apiMocks.getTransactions.mockResolvedValue([updated]);
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.updateTransaction).toHaveBeenCalledWith("edit-coffee", {
+      amount: "40.5", kind: "Income", category: "Refund",
+      date: monthValue() + "-12", description: "Returned coffee",
+    }));
+    expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
+    await waitFor(() => expect(apiMocks.getTransactions).toHaveBeenCalledTimes(2));
+    expect(apiMocks.getBudgetProgress).toHaveBeenLastCalledWith(monthValue() + "-01");
+    const summary = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
+    expect(within(summary).getByText("Income").closest(".metricTile")).toHaveTextContent("$40.50");
+    expect(within(summary).getByText("Expense").closest(".metricTile")).toHaveTextContent("$0.00");
+  });
+
+  it("saves empty optional fields as null", async () => {
+    const user = userEvent.setup();
+    apiMocks.getTransactions.mockResolvedValue([{ ...originalTransaction(), category: null, description: null }]);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Edit transaction: Expense/ }));
+    const form = within(editor());
+    expect(form.getByLabelText("Category (optional)")).toHaveValue("");
+    expect(form.getByLabelText("Description (optional)")).toHaveValue("");
+    await user.type(form.getByLabelText("Category (optional)"), "   ");
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.updateTransaction).toHaveBeenCalledWith("edit-coffee", expect.objectContaining({
+      amount: "25.00", category: null, description: null,
+    })));
+  });
+
+  it("rejects a zero amount without sending a request", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const form = await openEditor(user);
+    fireEvent.change(form.getByLabelText("Amount"), { target: { value: "0" } });
+    fireEvent.submit(editor());
+    expect(await form.findByRole("alert")).toHaveTextContent("Amount must be greater than zero");
+    expect(apiMocks.updateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft after an API failure so saving can be retried", async () => {
+    const user = userEvent.setup();
+    apiMocks.updateTransaction.mockRejectedValueOnce(new Error("Transaction not found"));
+    render(<App />);
+    const form = await openEditor(user);
+    await user.clear(form.getByLabelText("Description (optional)"));
+    await user.type(form.getByLabelText("Description (optional)"), "Corrected coffee");
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    expect(await form.findByRole("alert")).toHaveTextContent("Transaction not found");
+    expect(form.getByLabelText("Description (optional)")).toHaveValue("Corrected coffee");
+    expect(apiMocks.getTransactions).toHaveBeenCalledTimes(1);
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await screen.findByText("Transaction updated successfully.");
+    expect(apiMocks.updateTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("prevents duplicate saves and draft changes while a write is pending", async () => {
+    const user = userEvent.setup();
+    const save = deferred<void>();
+    apiMocks.updateTransaction.mockReturnValue(save.promise);
+    render(<App />);
+    const form = await openEditor(user);
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    expect(form.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(form.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(form.getByLabelText("Amount")).toBeDisabled();
+    fireEvent.submit(editor());
+    expect(apiMocks.updateTransaction).toHaveBeenCalledTimes(1);
+    await act(async () => { save.resolve(undefined); });
+    await screen.findByText("Transaction updated successfully.");
+  });
+
+  it("distinguishes a completed edit from a failed refresh and retains the saved row", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const form = await openEditor(user);
+    await user.clear(form.getByLabelText("Description (optional)"));
+    await user.type(form.getByLabelText("Description (optional)"), "Saved coffee");
+    apiMocks.getTransactions.mockRejectedValueOnce(new Error("offline"));
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Transaction was updated, but the dashboard could not refresh: offline");
+    expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Saved coffee")).toBeInTheDocument();
+    expect(apiMocks.updateTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes the accepted search rather than a query draft and removes its stale AI summary", async () => {
+    const user = userEvent.setup();
+    const refreshedSearch = deferred<SemanticSearchResult>();
+    apiMocks.semanticSearchTransactions.mockResolvedValueOnce({
+      transactions: [{ transaction: originalTransaction(), similarity_score: 0.9 }], summary: "Old AI summary",
+    }).mockReturnValueOnce(refreshedSearch.promise);
+    render(<App />);
+    await screen.findByText("Coffee");
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "coffee");
+    await user.click(screen.getByLabelText("Summarize with AI"));
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByText("Old AI summary");
+    const form = await openEditor(user);
+    await user.clear(screen.getByRole("textbox", { name: "Semantic search query" }));
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "next query draft");
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(2));
+    expect(apiMocks.semanticSearchTransactions).toHaveBeenLastCalledWith({ query: "coffee", limit: 10, summary: true });
+    expect(screen.queryByText("Old AI summary")).not.toBeInTheDocument();
+    await act(async () => { refreshedSearch.resolve({ transactions: [], summary: "Updated AI summary" }); });
+    expect(await screen.findByText("No matching transactions found.")).toBeInTheDocument();
+    expect(screen.getByText("Updated AI summary")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Semantic search query" })).toHaveValue("next query draft");
+  });
+
+  it("does not restore a search cleared while saving an edit", async () => {
+    const user = userEvent.setup();
+    const save = deferred<void>();
+    apiMocks.updateTransaction.mockReturnValue(save.promise);
+    apiMocks.semanticSearchTransactions.mockResolvedValue({
+      transactions: [{ transaction: originalTransaction(), similarity_score: 0.9 }], summary: null,
+    });
+    render(<App />);
+    await screen.findByText("Coffee");
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "coffee");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    const form = await openEditor(user);
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    await act(async () => { save.resolve(undefined); });
+    await screen.findByText("Transaction updated successfully.");
+    expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("textbox", { name: "Semantic search query" })).toHaveValue("");
+  });
+
+  it("ignores a search response that started before the edit finished", async () => {
+    const user = userEvent.setup();
+    const oldSearch = deferred<SemanticSearchResult>();
+    apiMocks.semanticSearchTransactions.mockReturnValueOnce(oldSearch.promise).mockResolvedValueOnce({ transactions: [], summary: null });
+    render(<App />);
+    const form = await openEditor(user);
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "coffee");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(2));
+    await act(async () => { oldSearch.resolve({ transactions: [{ transaction: originalTransaction(), similarity_score: 0.9 }], summary: "Stale summary" }); });
+    expect(await screen.findByText("No matching transactions found.")).toBeInTheDocument();
+    expect(screen.queryByText("Stale summary")).not.toBeInTheDocument();
+  });
+
+  it("ignores a failed search refresh after Clear while dashboard reads are still pending", async () => {
+    const user = userEvent.setup();
+    const transactionsRefresh = deferred<Transaction[]>();
+    const searchRefresh = deferred<SemanticSearchResult>();
+    apiMocks.semanticSearchTransactions.mockResolvedValueOnce({
+      transactions: [{ transaction: originalTransaction(), similarity_score: 0.9 }], summary: null,
+    }).mockReturnValueOnce(searchRefresh.promise);
+    render(<App />);
+    await screen.findByText("Coffee");
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "coffee");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    const form = await openEditor(user);
+    apiMocks.getTransactions.mockReturnValueOnce(transactionsRefresh.promise);
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(2));
+    await act(async () => { searchRefresh.reject(new Error("search refresh failed")); });
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    await act(async () => { transactionsRefresh.resolve([originalTransaction()]); });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Edit transaction: Coffee/ })).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("retains a saved search-result row when the regular list could not load", async () => {
+    const user = userEvent.setup();
+    apiMocks.getTransactions.mockRejectedValue(new Error("list offline"));
+    apiMocks.semanticSearchTransactions.mockResolvedValueOnce({
+      transactions: [{ transaction: originalTransaction(), similarity_score: 0.9 }], summary: null,
+    }).mockResolvedValueOnce({ transactions: [], summary: null });
+    render(<App />);
+    await screen.findByRole("alert");
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "coffee");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    const form = await openEditor(user);
+    await user.clear(form.getByLabelText("Description (optional)"));
+    await user.type(form.getByLabelText("Description (optional)"), "Saved search edit");
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await screen.findByText("No matching transactions found.");
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(await screen.findByText("Saved search edit")).toBeInTheDocument();
+  });
+
+  it("clears the edit draft and ignores its completion after another login", async () => {
+    const user = userEvent.setup();
+    const save = deferred<void>();
+    apiMocks.updateTransaction.mockReturnValue(save.promise);
+    render(<App />);
+    const form = await openEditor(user);
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    apiMocks.getTransactions.mockResolvedValue([]);
+    await signInAgain(user);
+    await act(async () => { save.resolve(undefined); });
+    expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Transaction updated successfully.")).not.toBeInTheDocument();
+    expect(apiMocks.getTransactions).toHaveBeenCalledTimes(2);
   });
 });

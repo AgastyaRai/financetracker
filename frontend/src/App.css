@@ -796,3 +796,28 @@ tbody tr:nth-child(odd){
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+.transactionEditor{
+  margin: 18px 0;
+  padding: 18px;
+  border: 2px solid var(--border-strong);
+  border-radius: 8px;
+  background: #080a10;
+}
+
+.transactionEditor h3{ margin: 0 0 18px; }
+.transactionEditActions{ display: flex; flex-wrap: wrap; gap: 12px; }
+.transactionEditActions button{ flex: 1; }
+.transactionEditButton{ padding: 8px 12px; }
+.transactionTable table{ min-width: 720px; overflow: visible; }
+.transactionTable:focus-visible{ outline: 2px solid var(--accent2); outline-offset: 2px; }
+
+@media (max-width: 600px){
+  .transactionTable th:last-child,
+  .transactionTable td:last-child{
+    position: sticky;
+    right: 0;
+    border-left: 2px solid var(--border-strong);
+    background: #080a10;
+  }
+}

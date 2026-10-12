@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getTransactions, loginUser, setUnauthorizedCallback } from "./api";
+import { getTransactions, loginUser, setUnauthorizedCallback, updateTransaction } from "./api";
 
 describe("API requests", () => {
   const fetchMock = vi.fn();
@@ -89,5 +89,22 @@ describe("API requests", () => {
     expect(localStorage.getItem("access_token")).toBe("other-tab-token");
     expect(logout).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("Authorization");
+  });
+});
+
+
+describe("transaction updates", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends authenticated PUT fields and accepts an empty success response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    localStorage.setItem("access_token", "edit-token");
+    const input = { amount: "40.50", kind: "Expense" as const, category: null, date: "2026-10-12", description: "Coffee" };
+    await expect(updateTransaction("transaction-id", input)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith("/api/transactions/transaction-id", expect.objectContaining({
+      method: "PUT", body: JSON.stringify(input),
+      headers: expect.objectContaining({ Authorization: "Bearer edit-token" }),
+    }));
   });
 });

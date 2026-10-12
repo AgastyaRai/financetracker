@@ -84,6 +84,13 @@ export async function addTransaction(tx: TransactionInput): Promise<void> {
   });
 }
 
+export async function updateTransaction(id: string, tx: TransactionInput): Promise<void> {
+  await request<void>(`/transactions/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(tx),
+  });
+}
+
 export async function getTransactions() {
   return await request<Transaction[]>("/transactions", { method: "GET" });
 }

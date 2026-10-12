@@ -12,6 +12,7 @@ import { useRequestLifecycle } from "./hooks/useRequestLifecycle";
 import type { Transaction, TransactionInput, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 import {
   addTransaction,
+  updateTransaction,
   getTransactions,
   loginUser,
   registerUser,
@@ -28,6 +29,7 @@ function errorMessage(e: unknown): string {
 }
 
 type AuthMode = "login" | "register";
+type SemanticSearchInput = Parameters<typeof semanticSearchTransactions>[0];
 function localDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -117,6 +119,9 @@ export default function App() {
   // Transactions
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [submittingEdit, setSubmittingEdit] = useState(false);
+  const [editStatus, setEditStatus] = useState<StatusMessage | null>(null);
 
   // Add transaction form state
   const [amount, setAmount] = useState("12.34");
@@ -138,6 +143,7 @@ export default function App() {
   const [includeSummary, setIncludeSummary] = useState(false);
   const [semanticResults, setSemanticResults] = useState<SemanticSearchResult | null>(null);
   const [searchingSemantic, setSearchingSemantic] = useState(false);
+  const activeSemanticSearch = useRef<SemanticSearchInput | null>(null);
 
   const [authStatus, setAuthStatus] = useState<StatusMessage | null>(null);
   const [transactionStatus, setTransactionStatus] = useState<StatusMessage | null>(null);
@@ -164,6 +170,10 @@ export default function App() {
     }
     setIsAuthenticated(false);
     setTransactions([]);
+    setEditingTransaction(null);
+    setSubmittingEdit(false);
+    setEditStatus(null);
+    activeSemanticSearch.current = null;
     setBudgets([]);
     setProgress([]);
     setLoadingTx(false);
@@ -472,6 +482,88 @@ export default function App() {
     }
   }
 
+  function startEditingTransaction(transaction: Transaction) {
+    if (submittingEdit) return;
+    setEditingTransaction(transaction);
+    setEditStatus(null);
+    setTransactionsStatus(null);
+  }
+
+  function cancelEditingTransaction() {
+    if (submittingEdit) return;
+    setEditingTransaction(null);
+    setEditStatus(null);
+  }
+
+  async function handleUpdateTransaction(input: TransactionInput) {
+    if (!isAuthenticated || submittingEdit || !editingTransaction) return;
+    setEditStatus(null);
+    if (!input.amount.trim() || !Number.isFinite(Number(input.amount)) || Number(input.amount) <= 0) {
+      setEditStatus({ text: "Amount must be greater than zero", type: "error" });
+      return;
+    }
+    if (!input.date) {
+      setEditStatus({ text: "Date is required", type: "error" });
+      return;
+    }
+
+    const transactionId = editingTransaction.id;
+    const isCurrentSession = captureSession();
+    setSubmittingEdit(true);
+    setTransactionsStatus(null);
+    try {
+      await updateTransaction(transactionId, input);
+      if (!isCurrentSession()) return;
+    } catch (e: unknown) {
+      if (isCurrentSession()) {
+        setEditStatus({ text: errorMessage(e), type: "error" });
+        setSubmittingEdit(false);
+      }
+      return;
+    }
+
+    // A completed write invalidates reads and AI summaries that used the previous transaction fields.
+    requestVersions.current.transactions++;
+    requestVersions.current.search++;
+    setTransactions((current) => {
+      const updated = { id: transactionId, ...input };
+      const next = current.some((transaction) => transaction.id === transactionId)
+        ? current.map((transaction) => transaction.id === transactionId ? { ...transaction, ...input } : transaction)
+        : [...current, updated];
+      return next.sort((a, b) => b.date.localeCompare(a.date));
+    });
+    setSemanticResults(null);
+    setSearchingSemantic(false);
+    setEditingTransaction(null);
+    setTransactionsStatus({ text: "Transaction updated successfully.", type: "success" });
+
+    const refreshMonth = selectedMonthStartRef.current;
+    const refreshes = [refreshTransactions(), refreshBudgets(refreshMonth)];
+    const refreshKinds: Array<"transactions" | "budgets" | "search"> = ["transactions", "budgets"];
+    const searchInput = activeSemanticSearch.current;
+    if (searchInput) {
+      refreshes.push(refreshSemanticSearch(searchInput));
+      refreshKinds.push("search");
+    }
+    const refreshVersions = { ...requestVersions.current };
+    const results = await Promise.allSettled(refreshes);
+    if (!isCurrentSession()) return;
+    // Clear or a newer month can supersede one refresh while the other dashboard reads are pending.
+    const failure = results.find((result, index) => {
+      const requestKind = refreshKinds[index];
+      return result.status === "rejected"
+        && requestVersions.current[requestKind] === refreshVersions[requestKind]
+        && (requestKind !== "budgets" || refreshMonth === selectedMonthStartRef.current);
+    });
+    if (failure?.status === "rejected") {
+      setTransactionsStatus({
+        text: `Transaction was updated, but the dashboard could not refresh: ${errorMessage(failure.reason)}`,
+        type: "error",
+      });
+    }
+    setSubmittingEdit(false);
+  }
+
   async function handleSaveBudget() {
     if (!isAuthenticated) return;
     if (submittingBudget) return;
@@ -519,7 +611,7 @@ export default function App() {
 
 
   async function handleSemanticSearch() {
-    if (!isAuthenticated || searchingSemantic) return;
+    if (!isAuthenticated || searchingSemantic || submittingEdit) return;
 
     const query = semanticQuery.trim();
 
@@ -528,27 +620,44 @@ export default function App() {
       return;
     }
 
+    const input = {
+      query,
+      limit: semanticLimit.trim() === "" ? undefined : Number(semanticLimit),
+      summary: includeSummary,
+    };
+    activeSemanticSearch.current = input;
+    setTransactionsStatus(null);
+    const isCurrentSession = captureSession();
+    const request = refreshSemanticSearch(input);
+    const version = requestVersions.current.search;
+    try {
+      await request;
+    } catch (e: unknown) {
+      if (isCurrentSession() && version === requestVersions.current.search) {
+        setTransactionsStatus({ text: errorMessage(e), type: "error" });
+      }
+    }
+  }
+
+  async function refreshSemanticSearch(input: SemanticSearchInput) {
     const isCurrent = beginRequest("search");
     setSearchingSemantic(true);
-    setTransactionsStatus(null);
-
+    setSemanticResults(null);
     try {
-      const parsedLimit = semanticLimit.trim() === "" ? undefined : Number(semanticLimit);
-
-      const results = await semanticSearchTransactions({
-        query,
-        limit: parsedLimit,
-        summary: includeSummary,
-      });
+      const results = await semanticSearchTransactions(input);
       if (isCurrent()) setSemanticResults(results);
     } catch (e: unknown) {
-      if (isCurrent()) setTransactionsStatus({ text: errorMessage(e), type: "error" });
+      if (isCurrent()) {
+        activeSemanticSearch.current = null;
+        throw e;
+      }
     } finally {
       if (isCurrent()) setSearchingSemantic(false);
     }
   }
 
   function clearSemanticSearch() {
+    activeSemanticSearch.current = null;
     requestVersions.current.search++;
     setSearchingSemantic(false);
     setSemanticQuery("");
@@ -626,6 +735,9 @@ export default function App() {
         searchingSemantic={searchingSemantic} handleSemanticSearch={handleSemanticSearch}
         clearSemanticSearch={clearSemanticSearch} transactionsStatus={transactionsStatus}
         semanticResults={semanticResults} loadingTx={loadingTx} transactions={transactions}
+        editingTransaction={editingTransaction} submittingEdit={submittingEdit} editStatus={editStatus}
+        startEditingTransaction={startEditingTransaction} cancelEditingTransaction={cancelEditingTransaction}
+        handleUpdateTransaction={handleUpdateTransaction}
       />
     </div>
   );

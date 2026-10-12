@@ -63,9 +63,9 @@ function budgetProgress(budgets, transactions, month) {
     });
 }
 
-export function createMockApiServer() {
-  const transactions = structuredClone(seededTransactions);
-  const budgets = structuredClone(seededBudgets);
+export function createMockApiServer(initialState = {}) {
+  const transactions = structuredClone(initialState.transactions ?? seededTransactions);
+  const budgets = structuredClone(initialState.budgets ?? seededBudgets);
   const token = `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url")}.x`;
 
   return createServer(async (request, response) => {
@@ -108,6 +108,31 @@ export function createMockApiServer() {
           description: input.description ?? null,
         });
         response.statusCode = 204;
+        response.end();
+        return;
+      }
+
+      if (request.method === "PUT" && url.pathname.startsWith("/api/transactions/")) {
+        const id = decodeURIComponent(url.pathname.slice("/api/transactions/".length));
+        const transaction = transactions.find((existing) => existing.id === id);
+        if (!transaction) {
+          sendJson(response, 404, { error: "Transaction not found" });
+          return;
+        }
+        const input = await readJson(request);
+        const amount = Number(input.amount);
+        if (!Number.isFinite(amount) || amount <= 0 || !["Income", "Expense"].includes(input.kind)) {
+          sendJson(response, 400, { error: "Invalid transaction" });
+          return;
+        }
+        Object.assign(transaction, {
+          amount: (input.kind === "Expense" ? -amount : amount).toFixed(2),
+          kind: input.kind,
+          category: input.category ?? null,
+          date: input.date,
+          description: input.description ?? null,
+        });
+        response.statusCode = 200;
         response.end();
         return;
       }
