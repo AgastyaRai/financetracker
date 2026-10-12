@@ -1,7 +1,8 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import type { Budget, SemanticSearchResult, Transaction } from "./types";
 
 const apiMocks = vi.hoisted(() => ({
   addTransaction: vi.fn(),
@@ -23,7 +24,7 @@ function tokenWithExpiry(expiryTime: number) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   apiMocks.addTransaction.mockResolvedValue(undefined);
   apiMocks.getBudgetProgress.mockResolvedValue([]);
   apiMocks.getBudgets.mockResolvedValue([]);
@@ -411,5 +412,304 @@ describe("dashboard correctness", () => {
     expect(
       within(analyticsCard as HTMLElement).getByText("No activity for this month yet."),
     ).toBeInTheDocument();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function monthValue(date = new Date()) {
+  return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+}
+
+function privateSearchResult(description: string): SemanticSearchResult {
+  return {
+    transactions: [{
+      transaction: {
+        id: description, amount: "25.00", kind: "Expense", category: "Food",
+        date: monthValue() + "-10", description,
+      },
+      similarity_score: 0.9,
+    }],
+    summary: null,
+  };
+}
+
+async function signInAgain(user: ReturnType<typeof userEvent.setup>) {
+  apiMocks.loginUser.mockResolvedValue({
+    access_token: tokenWithExpiry(Date.now() + 180_000), user_id: "next-user",
+  });
+  await user.type(screen.getByLabelText("Username or Email"), "next-user");
+  await user.type(screen.getByLabelText("Password"), "password");
+  await user.click(screen.getAllByRole("button", { name: "Login" })[1]);
+  await screen.findByRole("heading", { name: "Dashboard" });
+}
+
+describe("dashboard request lifecycle", () => {
+  beforeEach(() => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 60_000));
+  });
+
+  it.each([0, 1])("keeps a valid selection when month field %i is cleared", (index) => {
+    render(<App />);
+    const monthInput = screen.getAllByLabelText("Month")[index];
+    const selectedMonth = (monthInput as HTMLInputElement).value;
+    fireEvent.change(monthInput, { target: { value: "" } });
+    expect(monthInput).toHaveValue(selectedMonth);
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+  });
+
+  it("keeps the newer month's budgets when an older response arrives last", async () => {
+    const oldMonth = monthValue();
+    const now = new Date();
+    const nextMonth = monthValue(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+    const oldRequest = deferred<Budget[]>();
+    apiMocks.getBudgets.mockImplementation((month: string) => month === oldMonth + "-01"
+      ? oldRequest.promise
+      : Promise.resolve([{ month, category: "Current budget", amount: "200.00" }]));
+    render(<App />);
+    const budgetCard = screen.getByRole("heading", { name: "Budgets" }).closest(".card") as HTMLElement;
+    fireEvent.change(within(budgetCard).getByLabelText("Month"), { target: { value: nextMonth } });
+    await within(budgetCard).findByText("Current budget");
+
+    await act(async () => {
+      oldRequest.resolve([{ month: oldMonth + "-01", category: "Previous budget", amount: "100.00" }]);
+    });
+
+    expect(within(budgetCard).getByText("Current budget")).toBeInTheDocument();
+    expect(within(budgetCard).queryByText("Previous budget")).not.toBeInTheDocument();
+  });
+
+  it("ignores a failed budget request for a month that is no longer selected", async () => {
+    const oldMonth = monthValue();
+    const now = new Date();
+    const nextMonth = monthValue(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+    const oldRequest = deferred<Budget[]>();
+    apiMocks.getBudgets.mockImplementation((month: string) => month === oldMonth + "-01"
+      ? oldRequest.promise
+      : Promise.resolve([{ month, category: "Current budget", amount: "200.00" }]));
+    render(<App />);
+    fireEvent.change(screen.getAllByLabelText("Month")[0], { target: { value: nextMonth } });
+    await screen.findByText("Current budget");
+    await act(async () => { oldRequest.reject(new Error("old month failed")); });
+    expect(screen.queryByText("old month failed")).not.toBeInTheDocument();
+    expect(screen.getByText("Current budget")).toBeInTheDocument();
+  });
+
+  it("does not let a completed save reset a new month's budget or draft", async () => {
+    const user = userEvent.setup();
+    const oldMonth = monthValue();
+    const now = new Date();
+    const nextMonth = monthValue(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+    const save = deferred<void>();
+    apiMocks.upsertBudget.mockReturnValue(save.promise);
+    apiMocks.getBudgets.mockImplementation((month: string) => Promise.resolve([{
+      month, category: month === oldMonth + "-01" ? "Previous budget" : "Current budget", amount: "100.00",
+    }]));
+    render(<App />);
+    const budgetCard = screen.getByRole("heading", { name: "Budgets" }).closest(".card") as HTMLElement;
+    await within(budgetCard).findByText("Previous budget");
+    const categoryInput = within(budgetCard).getByLabelText("Category");
+    await user.type(categoryInput, "Food");
+    await user.click(within(budgetCard).getByRole("button", { name: "Save budget" }));
+    fireEvent.change(within(budgetCard).getByLabelText("Month"), { target: { value: nextMonth } });
+    await within(budgetCard).findByText("Current budget");
+    await user.clear(categoryInput);
+    await user.type(categoryInput, "Next draft");
+    await act(async () => { save.resolve(undefined); });
+    await waitFor(() => expect(within(budgetCard).getByRole("button", { name: "Save budget" })).toBeEnabled());
+    expect(categoryInput).toHaveValue("Next draft");
+    expect(within(budgetCard).getByText("Current budget")).toBeInTheDocument();
+    expect(apiMocks.getBudgets).toHaveBeenLastCalledWith(nextMonth + "-01");
+  });
+
+  it("keeps a replacement search pending when the cleared search finishes", async () => {
+    const user = userEvent.setup();
+    const firstSearch = deferred<SemanticSearchResult>();
+    const nextSearch = deferred<SemanticSearchResult>();
+    apiMocks.semanticSearchTransactions.mockReturnValueOnce(firstSearch.promise).mockReturnValueOnce(nextSearch.promise);
+    render(<App />);
+    const queryInput = screen.getByRole("textbox", { name: "Semantic search query" });
+    await user.type(queryInput, "coffee");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
+    await user.type(queryInput, "train");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(2);
+    await act(async () => { firstSearch.resolve(privateSearchResult("Old search result")); });
+    expect(screen.queryByText("Old search result")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Searching..." })).toBeDisabled();
+    await act(async () => { nextSearch.resolve(privateSearchResult("Current search result")); });
+    expect(await screen.findByText("Current search result")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
+  });
+
+  it("ignores a search failure after Clear", async () => {
+    const user = userEvent.setup();
+    const search = deferred<SemanticSearchResult>();
+    apiMocks.semanticSearchTransactions.mockReturnValue(search.promise);
+    render(<App />);
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "coffee");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    await act(async () => { search.reject(new Error("cleared search failed")); });
+    expect(screen.queryByText("cleared search failed")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
+  });
+
+  it("clears private search results and drafts before the next login", async () => {
+    const user = userEvent.setup();
+    apiMocks.semanticSearchTransactions.mockResolvedValue({
+      ...privateSearchResult("Private previous-account result"), summary: "Private previous-account summary",
+    });
+    render(<App />);
+    await user.type(screen.getByLabelText("Description (optional)"), "Private transaction draft");
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "private query");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await screen.findByText("Private previous-account result");
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    await signInAgain(user);
+    expect(screen.queryByText("Private previous-account result")).not.toBeInTheDocument();
+    expect(screen.queryByText("Private previous-account summary")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Semantic search query" })).toHaveValue("");
+    expect(screen.getByLabelText("Description (optional)")).toHaveValue("");
+  });
+
+  it("ignores a previous account's pending search after another login", async () => {
+    const user = userEvent.setup();
+    const search = deferred<SemanticSearchResult>();
+    apiMocks.semanticSearchTransactions.mockReturnValue(search.promise);
+    render(<App />);
+    await user.type(screen.getByRole("textbox", { name: "Semantic search query" }), "private query");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    await signInAgain(user);
+    await act(async () => { search.resolve(privateSearchResult("Private late result")); });
+    expect(screen.queryByText("Private late result")).not.toBeInTheDocument();
+  });
+
+  it("ignores a previous account's transaction response after another login", async () => {
+    const user = userEvent.setup();
+    const oldRequest = deferred<Transaction[]>();
+    const nextRequest = deferred<Transaction[]>();
+    apiMocks.getTransactions.mockReturnValueOnce(oldRequest.promise).mockReturnValueOnce(nextRequest.promise);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    await signInAgain(user);
+    await act(async () => {
+      oldRequest.resolve([{ ...privateSearchResult("Private transaction").transactions[0].transaction, amount: "700.00" }]);
+    });
+    const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
+    const expenseTile = within(summaryCard).getByText("Expense").closest(".metricTile") as HTMLElement;
+    expect(expenseTile).toHaveTextContent("$0.00");
+    await act(async () => { nextRequest.resolve([]); });
+  });
+
+  it("ignores a previous account's write completion after another login", async () => {
+    const user = userEvent.setup();
+    const save = deferred<void>();
+    apiMocks.addTransaction.mockReturnValue(save.promise);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    await signInAgain(user);
+    await user.type(screen.getByLabelText("Description (optional)"), "New account draft");
+    await act(async () => { save.resolve(undefined); });
+    expect(screen.queryByText("Transaction added successfully.")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Description (optional)")).toHaveValue("New account draft");
+  });
+
+  it("preserves a new description typed while the previous transaction is saving", async () => {
+    const user = userEvent.setup();
+    const save = deferred<void>();
+    apiMocks.addTransaction.mockReturnValue(save.promise);
+    render(<App />);
+    const description = screen.getByLabelText("Description (optional)");
+    await user.type(description, "First draft");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.clear(description);
+    await user.type(description, "Next draft");
+    await act(async () => { save.resolve(undefined); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add" })).toBeEnabled());
+    expect(description).toHaveValue("Next draft");
+  });
+
+  it("cleans up the logout timer and unauthorized callback when unmounted", () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-10-11T12:00:00Z");
+    vi.setSystemTime(now);
+    localStorage.setItem("access_token", tokenWithExpiry(now.getTime() + 60_000));
+    const { unmount } = render(<App />);
+    unmount();
+    const nextToken = tokenWithExpiry(now.getTime() + 180_000);
+    localStorage.setItem("access_token", nextToken);
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(localStorage.getItem("access_token")).toBe(nextToken);
+    expect(apiMocks.setUnauthorizedCallback).toHaveBeenLastCalledWith(null);
+  });
+
+  it("clears this account's view when another tab replaces the session", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(screen.getByLabelText("Description (optional)"), "Private draft");
+    const oldToken = localStorage.getItem("access_token");
+    const nextToken = tokenWithExpiry(Date.now() + 180_000);
+    localStorage.setItem("access_token", nextToken);
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", {
+        key: "access_token", oldValue: oldToken, newValue: nextToken, storageArea: localStorage,
+      }));
+    });
+    expect(screen.getByRole("heading", { name: "FinanceTracker" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("access_token")).toBe(nextToken);
+  });
+});
+
+describe("authentication request lifecycle", () => {
+  it("does not establish a session after the login screen unmounts", async () => {
+    const user = userEvent.setup();
+    const login = deferred<{ access_token: string; user_id: string }>();
+    apiMocks.loginUser.mockReturnValue(login.promise);
+    const { unmount } = render(<App />);
+    await user.type(screen.getByLabelText("Username or Email"), "user");
+    await user.type(screen.getByLabelText("Password"), "password");
+    await user.click(screen.getAllByRole("button", { name: "Login" })[1]);
+    unmount();
+    await act(async () => {
+      login.resolve({ access_token: tokenWithExpiry(Date.now() + 180_000), user_id: "user" });
+    });
+    expect(localStorage.getItem("access_token")).toBeNull();
+  });
+
+  it("does not replace a newer cross-tab session with a pending login", async () => {
+    const user = userEvent.setup();
+    const login = deferred<{ access_token: string; user_id: string }>();
+    apiMocks.loginUser.mockReturnValue(login.promise);
+    render(<App />);
+    await user.type(screen.getByLabelText("Username or Email"), "user");
+    await user.type(screen.getByLabelText("Password"), "password");
+    await user.click(screen.getAllByRole("button", { name: "Login" })[1]);
+    const nextToken = tokenWithExpiry(Date.now() + 240_000);
+    localStorage.setItem("access_token", nextToken);
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", {
+        key: "access_token", oldValue: null, newValue: nextToken, storageArea: localStorage,
+      }));
+    });
+    await act(async () => {
+      login.resolve({ access_token: tokenWithExpiry(Date.now() + 180_000), user_id: "user" });
+    });
+    expect(localStorage.getItem("access_token")).toBe(nextToken);
+    expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Login" })[1]).toBeEnabled();
   });
 });

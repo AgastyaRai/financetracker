@@ -393,6 +393,7 @@ export default function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(hasValidStoredSession);
   const logoutTimerRef = useRef<number | null>(null);
+  const requestVersions = useRef({ session: 0, transactions: 0, budgets: 0, search: 0 });
 
   // Auth form state
   const [username, setUsername] = useState("");
@@ -402,6 +403,8 @@ export default function App() {
 
   // Shared month for analytics + budgets
   const [selectedMonth, setSelectedMonth] = useState<string>(() => localDateInputValue(new Date()).slice(0, 7)); // "YYYY-MM"
+
+  const selectedMonthStartRef = useRef(monthInputToMonthStart(selectedMonth));
 
   // Transactions
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -436,20 +439,50 @@ export default function App() {
   const [submittingTransaction, setSubmittingTransaction] = useState(false);
   const [submittingBudget, setSubmittingBudget] = useState(false);
 
+  // Responses belong to the session and request that started them, even after logout or Clear.
+  const captureSession = useCallback(() => {
+    const session = requestVersions.current.session;
+    const token = localStorage.getItem("access_token");
+    return () => session === requestVersions.current.session
+      && token === localStorage.getItem("access_token");
+  }, []);
+
+  const beginRequest = useCallback((kind: "transactions" | "budgets" | "search") => {
+    const version = ++requestVersions.current[kind];
+    const isCurrentSession = captureSession();
+    return () => isCurrentSession() && version === requestVersions.current[kind];
+  }, [captureSession]);
+
   // Logout function - clear all auth state
-  const logout = useCallback((message?: string) => {
+  const logout = useCallback((message?: string, clearStoredSession = true) => {
+    requestVersions.current.session++;
     // Clear any existing logout timer
     if (logoutTimerRef.current) {
       clearTimeout(logoutTimerRef.current);
       logoutTimerRef.current = null;
     }
     
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("user_id");
+    if (clearStoredSession) {
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("user_id");
+    }
     setIsAuthenticated(false);
     setTransactions([]);
     setBudgets([]);
     setProgress([]);
+    setLoadingTx(false);
+    setLoadingBudgets(false);
+    setAmount("12.34");
+    setKind("Expense");
+    setCategory("");
+    setDate(localDateInputValue(new Date()));
+    setDescription("");
+    setBudgetCategory("");
+    setBudgetAmount("300.00");
+    setSemanticQuery("");
+    setSemanticLimit("10");
+    setIncludeSummary(false);
+    setSemanticResults(null);
     setPassword("");
     setTransactionStatus(null);
     setBudgetStatus(null);
@@ -488,14 +521,19 @@ export default function App() {
     const timeUntilLogout = Math.max(0, timeUntilExpiry - logoutBuffer);
 
     logoutTimerRef.current = window.setTimeout(() => {
-      logout("Session expired. Please log in again.");
+      logout("Session expired. Please log in again.", localStorage.getItem("access_token") === token);
     }, timeUntilLogout);
     return true;
   }, [logout]);
 
   // Set up 401 handler on mount
   useEffect(() => {
+    const versions = requestVersions.current;
     setUnauthorizedCallback(() => logout("Session expired. Please log in again."));
+    return () => {
+      setUnauthorizedCallback(null);
+      versions.session++;
+    };
   }, [logout]);
 
   // Set up auto-logout timer on mount if already authenticated
@@ -504,46 +542,85 @@ export default function App() {
     if (token) {
       setupAutoLogout(token);
     }
+    return () => {
+      if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    };
   }, [setupAutoLogout]); // Run once on mount
+
+  useEffect(() => {
+    function handleSessionChange(event: StorageEvent) {
+      if (event.storageArea !== localStorage) return;
+      if (event.key !== "access_token" && event.key !== null) return;
+      const token = localStorage.getItem("access_token");
+      if (event.key === "access_token" && (event.newValue !== token || event.newValue === event.oldValue)) return;
+      logout(token ? "Session changed in another tab. Please log in again." : "Logged out in another tab.", false);
+    }
+    window.addEventListener("storage", handleSessionChange);
+    return () => window.removeEventListener("storage", handleSessionChange);
+  }, [logout]);
 
   const monthStart = useMemo(() => monthInputToMonthStart(selectedMonth), [selectedMonth]);
   const monthEnd = useMemo(() => nextMonthStart(monthStart), [monthStart]);
 
-  async function refreshTransactions() {
+  function changeSelectedMonth(value: string) {
+    if (!/^\d{4,}-(0[1-9]|1[0-2])$/.test(value)) return;
+    if (value === selectedMonth) return;
+    selectedMonthStartRef.current = monthInputToMonthStart(value);
+    setBudgets([]);
+    setProgress([]);
+    setBudgetStatus(null);
+    setSelectedMonth(value);
+  }
+
+  const refreshTransactions = useCallback(async () => {
+    const isCurrent = beginRequest("transactions");
     setLoadingTx(true);
     try {
       const txs = await getTransactions();
-      txs.sort((a, b) => b.date.localeCompare(a.date));
-      setTransactions(txs);
+      if (!isCurrent()) return;
+      setTransactions([...txs].sort((a, b) => b.date.localeCompare(a.date)));
+    } catch (e) {
+      if (isCurrent()) throw e;
     } finally {
-      setLoadingTx(false);
+      if (isCurrent()) setLoadingTx(false);
     }
-  }
+  }, [beginRequest]);
 
-  async function refreshBudgets(monthStartStr: string) {
+  const refreshBudgets = useCallback(async (monthStartStr: string) => {
+    if (monthStartStr !== selectedMonthStartRef.current) return;
+    const isCurrentRequest = beginRequest("budgets");
+    const isCurrent = () => isCurrentRequest() && monthStartStr === selectedMonthStartRef.current;
     setLoadingBudgets(true);
     try {
-      const bs = await getBudgets(monthStartStr);
-      bs.sort((a, b) => a.category.localeCompare(b.category));
-      setBudgets(bs);
-
-      const p = await getBudgetProgress(monthStartStr);
-      p.sort((a, b) => a.category.localeCompare(b.category));
-      setProgress(p);
+      const [bs, p] = await Promise.all([getBudgets(monthStartStr), getBudgetProgress(monthStartStr)]);
+      if (!isCurrent()) return;
+      setBudgets([...bs].sort((a, b) => a.category.localeCompare(b.category)));
+      setProgress([...p].sort((a, b) => a.category.localeCompare(b.category)));
+    } catch (e) {
+      if (isCurrent()) throw e;
     } finally {
-      setLoadingBudgets(false);
+      if (isCurrent()) setLoadingBudgets(false);
     }
-  }
+  }, [beginRequest]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    refreshTransactions().catch((e) => setTransactionsStatus({ text: errorMessage(e), type: "error" }));
-  }, [isAuthenticated]);
+    const isCurrentSession = captureSession();
+    refreshTransactions().catch((e) => {
+      if (isCurrentSession()) setTransactionsStatus({ text: errorMessage(e), type: "error" });
+    });
+  }, [isAuthenticated, captureSession, refreshTransactions]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    refreshBudgets(monthStart).catch((e) => setBudgetStatus({ text: errorMessage(e), type: "error" }));
-  }, [isAuthenticated, monthStart]);
+    const isCurrentSession = captureSession();
+    refreshBudgets(monthStart).catch((e) => {
+      if (isCurrentSession() && monthStart === selectedMonthStartRef.current) {
+        setBudgetStatus({ text: errorMessage(e), type: "error" });
+      }
+    });
+  }, [isAuthenticated, monthStart, captureSession, refreshBudgets]);
 
   // Month-filtered transactions for analytics
   const monthTx = useMemo(() => {
@@ -634,11 +711,14 @@ export default function App() {
 
   async function handleLogin() {
     if (submittingAuth) return;
+    let isCurrentSession = captureSession();
     setAuthStatus(null);
     setSubmittingAuth(true);
     try {
       const res = await loginUser({ identifier, password });
+      if (!isCurrentSession()) return;
       localStorage.setItem("access_token", res.access_token);
+      isCurrentSession = captureSession();
       
       // Set up auto-logout timer based on JWT expiry
       if (!setupAutoLogout(res.access_token)) return;
@@ -646,9 +726,9 @@ export default function App() {
       setIsAuthenticated(true);
       setAuthStatus(null);
     } catch (e: unknown) {
-      setAuthStatus({ text: errorMessage(e), type: "error" });
+      if (isCurrentSession()) setAuthStatus({ text: errorMessage(e), type: "error" });
     } finally {
-      setSubmittingAuth(false);
+      if (isCurrentSession()) setSubmittingAuth(false);
     }
   }
 
@@ -669,26 +749,30 @@ export default function App() {
       description: description.trim() ? description.trim() : null,
     };
 
+    const isCurrentSession = captureSession();
     setSubmittingTransaction(true);
     try {
       await addTransaction(tx);
-      setDescription("");
+      if (!isCurrentSession()) return;
+      setDescription((current) => current === description ? "" : current);
       setTransactionStatus({ text: "Transaction added successfully.", type: "success" });
     } catch (e: unknown) {
-      setTransactionStatus({ text: errorMessage(e), type: "error" });
-      setSubmittingTransaction(false);
+      if (isCurrentSession()) {
+        setTransactionStatus({ text: errorMessage(e), type: "error" });
+        setSubmittingTransaction(false);
+      }
       return;
     }
 
     try {
-      await Promise.all([refreshTransactions(), refreshBudgets(monthStart)]);
+      await Promise.all([refreshTransactions(), refreshBudgets(selectedMonthStartRef.current)]);
     } catch (e: unknown) {
-      setTransactionsStatus({
+      if (isCurrentSession()) setTransactionsStatus({
         text: `Transaction was saved, but the dashboard could not refresh: ${errorMessage(e)}`,
         type: "error",
       });
     } finally {
-      setSubmittingTransaction(false);
+      if (isCurrentSession()) setSubmittingTransaction(false);
     }
   }
 
@@ -707,41 +791,48 @@ export default function App() {
       amount: budgetAmount,
     };
 
+    const isCurrentSession = captureSession();
+    const isCurrentMonth = () => isCurrentSession() && monthStart === selectedMonthStartRef.current;
     setSubmittingBudget(true);
     try {
       await upsertBudget(b);
+      if (!isCurrentMonth()) {
+        if (isCurrentSession()) setSubmittingBudget(false);
+        return;
+      }
       setBudgetStatus({ text: "Budget saved.", type: "success" });
-      setBudgetCategory("");
+      setBudgetCategory((current) => current === budgetCategory ? "" : current);
     } catch (e: unknown) {
-      setBudgetStatus({ text: errorMessage(e), type: "error" });
-      setSubmittingBudget(false);
+      if (isCurrentMonth()) setBudgetStatus({ text: errorMessage(e), type: "error" });
+      if (isCurrentSession()) setSubmittingBudget(false);
       return;
     }
 
     try {
       await refreshBudgets(monthStart);
     } catch (e: unknown) {
-      setBudgetStatus({
+      if (isCurrentMonth()) setBudgetStatus({
         text: `Budget was saved, but the dashboard could not refresh: ${errorMessage(e)}`,
         type: "error",
       });
     } finally {
-      setSubmittingBudget(false);
+      if (isCurrentSession()) setSubmittingBudget(false);
     }
   }
 
 
 
   async function handleSemanticSearch() {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || searchingSemantic) return;
 
     const query = semanticQuery.trim();
 
     if (!query) {
-      setSemanticResults(null);
+      clearSemanticSearch();
       return;
     }
 
+    const isCurrent = beginRequest("search");
     setSearchingSemantic(true);
     setTransactionsStatus(null);
 
@@ -753,15 +844,17 @@ export default function App() {
         limit: parsedLimit,
         summary: includeSummary,
       });
-      setSemanticResults(results);
+      if (isCurrent()) setSemanticResults(results);
     } catch (e: unknown) {
-      setTransactionsStatus({ text: errorMessage(e), type: "error" });
+      if (isCurrent()) setTransactionsStatus({ text: errorMessage(e), type: "error" });
     } finally {
-      setSearchingSemantic(false);
+      if (isCurrent()) setSearchingSemantic(false);
     }
   }
 
   function clearSemanticSearch() {
+    requestVersions.current.search++;
+    setSearchingSemantic(false);
     setSemanticQuery("");
     setSemanticResults(null);
     setTransactionsStatus(null);
@@ -969,7 +1062,7 @@ export default function App() {
               id="analytics-month"
               type="month"
               value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
+              onChange={(e) => changeSelectedMonth(e.target.value)}
               style={{ maxWidth: 200 }}
             />
           </div>
@@ -1114,7 +1207,7 @@ export default function App() {
             id="budget-month"
             type="month"
             value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
+            onChange={(e) => changeSelectedMonth(e.target.value)}
           />
 
           <label htmlFor="budget-category">Category</label>

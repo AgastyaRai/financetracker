@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getTransactions, setUnauthorizedCallback } from "./api";
+import { getTransactions, loginUser, setUnauthorizedCallback } from "./api";
 
 describe("API requests", () => {
   const fetchMock = vi.fn();
@@ -11,6 +11,7 @@ describe("API requests", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setUnauthorizedCallback(null);
   });
 
   it("includes the access token in authenticated requests", async () => {
@@ -61,5 +62,32 @@ describe("API requests", () => {
     });
 
     await expect(getTransactions()).rejects.toMatchObject({ message: "Invalid transaction" });
+  });
+
+  it("preserves a newer session when an old request returns 401", async () => {
+    const logout = vi.fn();
+    let respond!: (response: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((resolve) => { respond = resolve; }));
+    setUnauthorizedCallback(logout);
+    localStorage.setItem("access_token", "old-token");
+    const request = getTransactions();
+    localStorage.setItem("access_token", "new-token");
+    respond(new Response("", { status: 401 }));
+    await expect(request).rejects.toThrow("Session expired. Please log in again.");
+    expect(localStorage.getItem("access_token")).toBe("new-token");
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed login's credential error without expiring a stored session", async () => {
+    const logout = vi.fn();
+    setUnauthorizedCallback(logout);
+    localStorage.setItem("access_token", "other-tab-token");
+    fetchMock.mockResolvedValue(new Response("Invalid username/email or password", { status: 401 }));
+    await expect(loginUser({ identifier: "user", password: "wrong-password" })).rejects.toThrow(
+      "Invalid username/email or password",
+    );
+    expect(localStorage.getItem("access_token")).toBe("other-tab-token");
+    expect(logout).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("Authorization");
   });
 });
