@@ -145,6 +145,99 @@ describe("authentication screen", () => {
   });
 });
 
+describe("session expiry after suspension", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 86_400_000));
+  });
+
+  it.each(["focus", "pageshow", "visibilitychange"])("expires on %s without waiting for a suspended timer", (event) => {
+    render(<App />);
+    // Moving the wall clock leaves the timer pending, as happens during suspension.
+    vi.setSystemTime(Date.now() + 86_400_000);
+    if (event === "visibilitychange") vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    act(() => { (event === "visibilitychange" ? document : window).dispatchEvent(new Event(event)); });
+    expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(screen.getByText("Session expired. Please log in again.")).toBeInTheDocument();
+    expect(localStorage.getItem("access_token")).toBeNull();
+  });
+
+  it("preserves valid sessions on resume and keeps their original deadline", () => {
+    render(<App />);
+    vi.setSystemTime(Date.now() + 43_200_000);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(43_170_000); });
+    expect(screen.getByText("Session expired. Please log in again.")).toBeInTheDocument();
+  });
+
+  it("rechecks the wall clock when a timer fires after a backward clock change", () => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 60_000));
+    render(<App />);
+    vi.setSystemTime(Date.now() - 60_000);
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(screen.getByText("Session expired. Please log in again.")).toBeInTheDocument();
+  });
+
+  it("clears the old account on resume without deleting a replacement session", () => {
+    render(<App />);
+    const replacement = tokenWithExpiry(Date.now() + 172_800_000);
+    // A suspended tab can regain focus before the queued storage event arrives.
+    localStorage.setItem("access_token", replacement);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("access_token")).toBe(replacement);
+  });
+
+  it("rejects an expired session on reload before requesting account data", () => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() - 1_000));
+    render(<App />);
+    expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(apiMocks.getTransactions).not.toHaveBeenCalled();
+  });
+
+  it("removes resume checks when unmounted", () => {
+    const { unmount } = render(<App />);
+    unmount();
+    vi.setSystemTime(Date.now() + 86_400_000);
+    const replacement = tokenWithExpiry(Date.now() + 60_000);
+    localStorage.setItem("access_token", replacement);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("pageshow"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(localStorage.getItem("access_token")).toBe(replacement);
+  });
+
+  it("rechecks expiry for a session established by login", async () => {
+    localStorage.removeItem("access_token");
+    apiMocks.loginUser.mockResolvedValue({ access_token: tokenWithExpiry(Date.now() + 60_000), user_id: "user" });
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Username or Email"), { target: { value: "user" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "password" } });
+    await act(async () => { fireEvent.click(screen.getAllByRole("button", { name: "Login" })[1]); });
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    vi.setSystemTime(Date.now() + 60_000);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(screen.getByText("Session expired. Please log in again.")).toBeInTheDocument();
+  });
+
+  it("does not expire early when a clock adjustment puts the deadline beyond the timer limit", () => {
+    render(<App />);
+    vi.setSystemTime(Date.now() - 30 * 86_400_000);
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    act(() => { vi.advanceTimersByTime(2_147_483_647); });
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(31 * 86_400_000 - 30_000 - 2_147_483_647); });
+    expect(screen.getByText("Session expired. Please log in again.")).toBeInTheDocument();
+  });
+});
+
 describe("dashboard correctness", () => {
   beforeEach(() => {
     localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 60_000));

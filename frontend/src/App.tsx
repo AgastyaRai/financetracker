@@ -105,6 +105,7 @@ export default function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(hasValidStoredSession);
   const logoutTimerRef = useRef<number | null>(null);
+  const checkSessionRef = useRef<(() => void) | null>(null);
 
   // Auth form state
   const [username, setUsername] = useState("");
@@ -160,6 +161,7 @@ export default function App() {
   // Logout function - clear all auth state
   const logout = useCallback((message?: string, clearStoredSession = true) => {
     requestVersions.current.session++;
+    checkSessionRef.current = null;
     // Clear any existing logout timer
     if (logoutTimerRef.current) {
       clearTimeout(logoutTimerRef.current);
@@ -228,10 +230,24 @@ export default function App() {
     // Set up auto-logout slightly before expiry (30 seconds early)
     const logoutBuffer = 30000; // 30 seconds
     const timeUntilLogout = Math.max(0, timeUntilExpiry - logoutBuffer);
+    const logoutDeadline = expiryTime - logoutBuffer;
 
-    logoutTimerRef.current = window.setTimeout(() => {
-      logout("Session expired. Please log in again.", localStorage.getItem("access_token") === token);
-    }, timeUntilLogout);
+    function checkSession() {
+      if (localStorage.getItem("access_token") !== token) {
+        logout("Session changed in another tab. Please log in again.", false);
+        return;
+      }
+      // Suspension and clock changes can separate elapsed timer time from the JWT deadline.
+      const remaining = logoutDeadline - Date.now();
+      if (remaining <= 0) {
+        logout("Session expired. Please log in again.");
+        return;
+      }
+      if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = window.setTimeout(checkSession, Math.min(remaining, 2_147_483_647));
+    }
+    checkSessionRef.current = checkSession;
+    logoutTimerRef.current = window.setTimeout(checkSession, Math.min(timeUntilLogout, 2_147_483_647));
     return true;
   }, [logout]);
 
@@ -254,8 +270,26 @@ export default function App() {
     return () => {
       if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current);
       logoutTimerRef.current = null;
+      checkSessionRef.current = null;
     };
   }, [setupAutoLogout]); // Run once on mount
+
+  useEffect(() => {
+    function checkSessionOnResume() {
+      checkSessionRef.current?.();
+    }
+    function checkVisibleSession() {
+      if (document.visibilityState === "visible") checkSessionOnResume();
+    }
+    window.addEventListener("focus", checkSessionOnResume);
+    window.addEventListener("pageshow", checkSessionOnResume);
+    document.addEventListener("visibilitychange", checkVisibleSession);
+    return () => {
+      window.removeEventListener("focus", checkSessionOnResume);
+      window.removeEventListener("pageshow", checkSessionOnResume);
+      document.removeEventListener("visibilitychange", checkVisibleSession);
+    };
+  }, []);
 
   useEffect(() => {
     function handleSessionChange(event: StorageEvent) {

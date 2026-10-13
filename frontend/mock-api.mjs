@@ -63,7 +63,7 @@ function budgetProgress(budgets, transactions, month) {
     });
 }
 
-export function createMockApiServer(initialState = {}) {
+export function createMockApiServer(initialState = {}, { now = Date.now, sessionDurationSeconds = 86400 } = {}) {
   const transactions = structuredClone(initialState.transactions ?? seededTransactions);
   const budgets = structuredClone(initialState.budgets ?? seededBudgets);
   const importedDetails = structuredClone(initialState.importedDetails ?? {});
@@ -73,13 +73,19 @@ export function createMockApiServer(initialState = {}) {
       && ["Income", "Expense"].includes(original.kind)
       && ["kind", "category", "description"].some((field) => transaction[field] !== original[field])) };
   });
-  const token = `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url")}.x`;
+  const sessions = new Map();
 
   return createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
 
     try {
       if (request.method === "POST" && url.pathname === "/api/users/login") {
+        const exp = Math.floor(now() / 1000) + sessionDurationSeconds;
+        const token = `x.${Buffer.from(JSON.stringify({ exp, jti: randomUUID() })).toString("base64url")}.x`;
+        for (const [storedToken, expiry] of sessions) {
+          if (expiry <= now() / 1000) sessions.delete(storedToken);
+        }
+        sessions.set(token, exp);
         sendJson(response, 200, {
           user_id: "99999999-9999-9999-9999-999999999999",
           access_token: token,
@@ -90,6 +96,16 @@ export function createMockApiServer(initialState = {}) {
       if (request.method === "POST" && url.pathname === "/api/users/register") {
         response.statusCode = 204;
         response.end();
+        return;
+      }
+
+      // Only sessions issued by this preview server can read or change its demo data.
+      const authorization = request.headers.authorization ?? "";
+      const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+      const expiry = sessions.get(token);
+      if (!expiry || expiry <= now() / 1000) {
+        sessions.delete(token);
+        sendJson(response, 401, { error: "Invalid or expired token" });
         return;
       }
 
