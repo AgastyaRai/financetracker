@@ -807,7 +807,7 @@ tbody tr:nth-child(odd){
 .transactionSimilarityColumn{ width: 76px; }
 .transactionAmountColumn{ width: 106px; }
 .transactionAmountValue{ white-space: nowrap; font-variant-numeric: tabular-nums; }
-.transactionTable .transactionAmountCell{ padding-inline: 14px; }
+.transactionTable .transactionAmountCell{ text-align: center; padding-inline: 14px; }
 .transactionActionsHeading{ text-align: center; padding-inline: 4px; }
 .transactionActionsColumn{ width: var(--transaction-actions-width); }
 .transactionRowActions{ text-align: center; padding: 8px 4px; }
@@ -853,6 +853,7 @@ tbody tr:nth-child(odd){
 .transactionEditingRow td:last-child{ padding-inline: 4px; }
 .transactionEditingRow input,
 .transactionEditingRow select{ min-width: 0; min-height: 36px; padding: 7px 8px; font-size: 13px; }
+.transactionEditingRow input[type="number"]{ text-align: center; font-variant-numeric: tabular-nums; }
 .transactionTable{ --transaction-actions-width: 88px; scroll-padding-inline-end: var(--transaction-actions-width); }
 
 @media (max-width: 600px){
