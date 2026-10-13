@@ -799,7 +799,7 @@ tbody tr:nth-child(odd){
 
 .transactionTable table{ min-width: 740px; table-layout: fixed; overflow: visible; }
 .transactionSemanticTable table{ min-width: 820px; }
-.transactionTable td{ overflow-wrap: anywhere; }
+.transactionTable td{ overflow-wrap: anywhere; font-size: 15px; }
 .transactionTable:focus-visible{ outline: 2px solid var(--accent2); outline-offset: 2px; }
 .transactionDateColumn{ width: 132px; }
 .transactionKindColumn{ width: 110px; }
