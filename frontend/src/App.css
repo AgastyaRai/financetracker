@@ -802,8 +802,8 @@ tbody tr:nth-child(odd){
 .transactionTable td{ overflow-wrap: anywhere; font-size: 15px; line-height: 20px; }
 .transactionTable:focus-visible{ outline: 2px solid var(--accent2); outline-offset: 2px; }
 .transactionDateColumn{ width: 132px; }
-.transactionKindColumn{ width: 110px; }
-.transactionCategoryColumn{ width: 132px; }
+.transactionKindColumn{ width: 104px; }
+.transactionCategoryColumn{ width: 160px; }
 .transactionSimilarityColumn{ width: 76px; }
 .transactionAmountColumn{ width: 106px; }
 .transactionAmountValue{ white-space: nowrap; font-variant-numeric: tabular-nums; }
