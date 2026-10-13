@@ -6,12 +6,27 @@ const API_BASE = "/api";
 // Logout callback - will be set by App component
 let onUnauthorized: (() => void) | null = null;
 
-export function setUnauthorizedCallback(callback: () => void) {
+export function setUnauthorizedCallback(callback: (() => void) | null) {
   onUnauthorized = callback;
 }
 
+function responseErrorMessage(text: string, status: number) {
+  if (!text) return `Request failed (${status})`;
+
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    if (typeof body.error === "string") return body.error;
+    if (typeof body.message === "string") return body.message;
+  } catch {
+    // Plain-text responses are already suitable for display.
+  }
+
+  return text;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem("access_token");
+  const isAuthRequest = path === "/users/login" || path === "/users/register";
+  const token = isAuthRequest ? null : localStorage.getItem("access_token");
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -22,14 +37,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   // Handle 401 Unauthorized - session expired or invalid token
-  if (res.status === 401) {
-    // Clear auth data
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("user_id");
-    
-    // Trigger logout callback
-    if (onUnauthorized) {
-      onUnauthorized();
+  if (res.status === 401 && !isAuthRequest) {
+    // An old response must not log out a session established while it was pending.
+    if (token && token === localStorage.getItem("access_token")) {
+      // Clear auth data
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("user_id");
+
+      // Trigger logout callback
+      if (onUnauthorized) {
+        onUnauthorized();
+      }
     }
     
     throw new Error("Session expired. Please log in again.");
@@ -37,7 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const msg = await res.text().catch(() => "");
-    throw new Error(msg || `Request failed (${res.status})`);
+    throw new Error(responseErrorMessage(msg, res.status));
   }
 
   const text = await res.text();
@@ -63,6 +81,19 @@ export async function addTransaction(tx: TransactionInput): Promise<void> {
   await request<void>("/transactions", {
     method: "POST",
     body: JSON.stringify(tx),
+  });
+}
+
+export async function updateTransaction(id: string, tx: TransactionInput): Promise<void> {
+  await request<void>(`/transactions/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(tx),
+  });
+}
+
+export async function revertTransaction(id: string) {
+  return await request<Pick<Transaction, "kind" | "category" | "description">>(`/transactions/${encodeURIComponent(id)}/revert`, {
+    method: "POST",
   });
 }
 

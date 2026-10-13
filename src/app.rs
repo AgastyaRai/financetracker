@@ -31,6 +31,7 @@ pub fn build_app(state: AppState) -> axum::Router {
         .route("/transactions", axum::routing::post(add_transaction))
         .route("/transactions", axum::routing::get(get_transactions))
         .route("/transactions/:id", axum::routing::put(update_transaction))
+        .route("/transactions/:id/revert", axum::routing::post(revert_transaction))
 
         // budget routes
         .route("/budgets", axum::routing::post(upsert_budget))

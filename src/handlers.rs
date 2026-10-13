@@ -310,6 +310,119 @@ pub(crate) async fn update_transaction(
     Ok(StatusCode::OK)
 }
 
+pub(crate) async fn revert_transaction(
+    auth: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(transaction_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<axum::Json<RevertedTransactionFields>, (StatusCode, String)> {
+    let mut database_transaction = state.pool.begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Serialize restores with edits, while checking the transaction owner's identity.
+    let existing_fields = sqlx::query_as::<_, TransactionSemanticFields>(
+        "SELECT kind, category, description FROM transactions
+         WHERE id = $1 AND user_id = $2 FOR UPDATE"
+    )
+    .bind(transaction_id)
+    .bind(auth.user_id)
+    .fetch_optional(&mut *database_transaction)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(existing_fields) = existing_fields else {
+        return Err((StatusCode::NOT_FOUND, "Imported transaction not found".to_string()));
+    };
+
+    // A provenance row is usable only when its bank connection belongs to the same user.
+    // Keep the source stable during the write without ever modifying its original payload.
+    let original_fields = sqlx::query_as::<_, TransactionSemanticFields>(
+        "SELECT d.inferred_kind AS kind, d.inferred_category AS category, d.inferred_description AS description
+         FROM imported_transaction_details d
+         JOIN bank_connections c ON c.connection_id = d.connection_id
+         WHERE d.transaction_id = $1 AND c.user_id = $2
+         FOR SHARE OF d, c"
+    )
+    .bind(transaction_id)
+    .bind(auth.user_id)
+    .fetch_optional(&mut *database_transaction)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(original_fields) = original_fields else {
+        return Err((StatusCode::NOT_FOUND, "Imported transaction not found".to_string()));
+    };
+    let kind = match original_fields.kind.as_str() {
+        "income" => TransactionKind::Income,
+        "expense" => TransactionKind::Expense,
+        // The imported schema anticipates transfers; this branch's financial model does not yet support them.
+        _ => return Err((StatusCode::CONFLICT, "The original transaction kind is not supported yet".to_string())),
+    };
+    let semantic_fields_changed = original_fields != existing_fields;
+
+    if semantic_fields_changed {
+        // Only the three editable import classifications are restored; money and date stay current.
+        sqlx::query(
+            "UPDATE transactions SET kind = $1, category = $2, description = $3
+             WHERE id = $4 AND user_id = $5"
+        )
+        .bind(&original_fields.kind)
+        .bind(original_fields.category.as_deref())
+        .bind(original_fields.description.as_deref())
+        .bind(transaction_id)
+        .bind(auth.user_id)
+        .execute(&mut *database_transaction)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        sqlx::query("DELETE FROM transaction_embeddings WHERE transaction_id = $1")
+            .bind(transaction_id)
+            .execute(&mut *database_transaction)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    database_transaction.commit()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Provider failure cannot undo a restore; guarded storage also rejects delayed results after a newer edit.
+    if semantic_fields_changed {
+        refresh_transaction_embedding(&state, transaction_id, auth.user_id, &original_fields).await;
+    }
+
+    Ok(axum::Json(RevertedTransactionFields {
+        kind,
+        category: original_fields.category,
+        description: original_fields.description,
+    }))
+}
+
+async fn revertible_transaction_ids(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    transaction_ids: &[uuid::Uuid],
+) -> Result<std::collections::HashSet<uuid::Uuid>, (StatusCode, String)> {
+    if transaction_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let ids = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT t.id FROM transactions t
+         JOIN imported_transaction_details d ON d.transaction_id = t.id
+         JOIN bank_connections c ON c.connection_id = d.connection_id
+         WHERE t.user_id = $1 AND c.user_id = $1 AND t.id = ANY($2)
+           AND d.inferred_kind IN ('income', 'expense')
+           AND (t.kind IS DISTINCT FROM d.inferred_kind
+             OR t.category IS DISTINCT FROM d.inferred_category
+             OR t.description IS DISTINCT FROM d.inferred_description)"
+    )
+    .bind(user_id)
+    .bind(transaction_ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(ids.into_iter().collect())
+}
+
 // embedding generation is intentionally separate from the database transaction so a slow provider does not hold a row lock
 async fn refresh_transaction_embedding(
     state: &AppState,
@@ -384,11 +497,15 @@ pub(crate) async fn get_transactions(
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let transaction_ids: Vec<uuid::Uuid> = transactions.iter().map(|transaction| transaction.id).collect();
+    let revertible_ids = revertible_transaction_ids(&state, auth.user_id, &transaction_ids).await?;
+
     // map the transactions from the database into Transaction structs
     let result: Vec<Transaction> = transactions
         .into_iter()
         .map(|transaction| Transaction {
             id: transaction.id,
+            can_revert: revertible_ids.contains(&transaction.id),
             user_id: auth.user_id,
             amount: transaction.amount,
             kind: match transaction.kind.as_str() {
@@ -669,6 +786,9 @@ pub(crate) async fn semantic_transaction_search(
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let transaction_ids: Vec<uuid::Uuid> = rows.iter().map(|row| row.get("id")).collect();
+    let revertible_ids = revertible_transaction_ids(&state, auth.user_id, &transaction_ids).await?;
+
     let semanticTransactions: Vec<SemanticTransaction> = rows
         .into_iter()
         .map(|row| {
@@ -682,6 +802,7 @@ pub(crate) async fn semantic_transaction_search(
 
             let transaction = Transaction {
                 id: row.get("id"),
+                can_revert: revertible_ids.contains(&row.get("id")),
                 user_id: row.get("user_id"),
                 amount: row.get("amount"),
                 kind,
