@@ -3,6 +3,21 @@ use sqlx::postgres::PgPoolOptions;
 // import from our library crate
 use financetracker::{AppState, build_app};
  
+async fn ensure_import_schema(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let import_schema_ready = sqlx::query_scalar::<_, bool>(
+        "SELECT to_regclass('bank_connections') IS NOT NULL
+            AND to_regclass('imported_transaction_details') IS NOT NULL"
+    )
+    .fetch_one(pool)
+    .await?;
+    if !import_schema_ready {
+        anyhow::bail!(
+            "Required import tables are missing: the backend needs bank_connections and imported_transaction_details. Set RUN_MIGRATIONS=1 or run cargo sqlx migrate run --source backend/migrations before deploying."
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     // load in env file
@@ -44,6 +59,9 @@ async fn main() {
             .expect("Could not run database migrations");
         println!("Database migrations complete.");
     }
+
+    // Transaction reads depend on import provenance, so reject an incomplete schema before serving traffic.
+    ensure_import_schema(&pool).await.expect("Database schema is not ready");
 
     // now, we set up the HTTP server so the frontend can call routes
     // we get the port number from the environment variable PORT, defaulting to 3000

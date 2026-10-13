@@ -70,3 +70,12 @@ The backend loads `backend/.env`. Set the following values before starting it:
 - `RUN_MIGRATIONS` is optional; when set, the backend applies migrations during startup.
 
 Never commit `backend/.env` or place `OPENAI_API_KEY` in frontend code. Only `backend/.env.example`, which contains placeholder values, should be tracked.
+
+
+## Deployment (Render + Supabase)
+
+Apply schema migrations to the Supabase database used by Render's `DATABASE_URL` before a new backend release serves requests. This branch requires `009_create_bank_connections.sql` and `011_create_imported_transaction_details.sql` for transaction loading and imported-field Revert.
+
+To run the repository's migrations during startup, set `RUN_MIGRATIONS=1` on the **Render backend service**, then redeploy it. SQLx applies pending migrations before the HTTP server starts and records completed versions, so subsequent startups do not reapply them. The environment variable can remain enabled for later releases. Verify the database's SQLx migration history before enabling this on a database whose schema was previously managed manually.
+
+When migrations are managed separately, run `cargo sqlx migrate run --source backend/migrations` against that same database before deployment. Startup now checks for the required import tables and reports migration instructions instead of starting a server whose transaction routes fail. The migrations are versioned in the repository; do not rewrite already-applied migration files.
