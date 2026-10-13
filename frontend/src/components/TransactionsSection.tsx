@@ -180,7 +180,7 @@ export default function TransactionsSection({
                 <th>Category</th>
                 <th>Description</th>
                 {shownSemanticTransactions && <th>Similarity</th>}
-                <th>Amount</th>
+                <th className="transactionAmountCell">Amount</th>
                 <th className="transactionActionsHeading">Edit</th>
               </tr>
             </thead>
@@ -199,7 +199,7 @@ export default function TransactionsSection({
                   <td>{t.category ?? "-"}</td>
                   <td>{t.description ?? "-"}</td>
                   {shownSemanticTransactions && <td>{similarity === undefined ? "-" : `${(similarity * 100).toFixed(1)}%`}</td>}
-                  <td><span className={`transactionAmountValue${Number(t.amount) < 0 ? "" : " transactionAmountPositive"}`}>{money(Number(t.amount))}</span></td>
+                  <td className="transactionAmountCell"><span className="transactionAmountValue">{money(Number(t.amount))}</span></td>
                   <td className="transactionRowActions"><div className="transactionEditActions">{editButton(t)}{revertButton(t)}</div></td>
                 </tr>
               ))}
