@@ -46,6 +46,7 @@ pub(crate) struct LoginResponse {
 pub(crate) enum TransactionKind {
     Income,
     Expense,
+    Transfer,
 }
 
 // struct for adding a transaction (request body - no user_id)

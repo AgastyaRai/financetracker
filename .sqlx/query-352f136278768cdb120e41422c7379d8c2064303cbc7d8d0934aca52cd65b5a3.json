@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT into transactions (user_id, amount, kind, category, date, description)\n        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, search_revision",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "search_revision",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Numeric",
+        "Varchar",
+        "Text",
+        "Date",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "352f136278768cdb120e41422c7379d8c2064303cbc7d8d0934aca52cd65b5a3"
+}

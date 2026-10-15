@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1",
+  "query": "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1 AND status <> 'removed'",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       true
     ]
   },
-  "hash": "f2c84b28f167c0157ac333ee783e810028506604d214eb9e384d58735f593fc8"
+  "hash": "015a10908be3c38a0b1aa65e04ee91098d6434d9b23d8c27be362bac4708bbd4"
 }

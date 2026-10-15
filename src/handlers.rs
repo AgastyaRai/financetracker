@@ -128,6 +128,7 @@ impl TransactionSemanticFields {
         let kind = match req.kind {
             TransactionKind::Income => "income",
             TransactionKind::Expense => "expense",
+            TransactionKind::Transfer => "transfer",
         };
 
         Self {
@@ -165,11 +166,12 @@ pub(crate) async fn add_transaction(
     let transaction_type = match req.kind {
         TransactionKind::Income => "income",
         TransactionKind::Expense => "expense",
+        TransactionKind::Transfer => "transfer",
     };
 
     // insert the transaction into the database
     let inserted_transaction = sqlx::query!("INSERT into transactions (user_id, amount, kind, category, date, description)
-        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, search_revision",
         auth.user_id,
         req.amount,
         transaction_type,
@@ -182,10 +184,11 @@ pub(crate) async fn add_transaction(
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let transaction_id = inserted_transaction.id;
+    let search_revision = inserted_transaction.search_revision;
 
     // now we call our embedding generation function to generate an embedding for this transaction
     // store the embedding in the database linked to this transaction
-    match TransactionEmbedding::generate_from_request(&state, &req).await {
+    match TransactionEmbedding::generate_from_request(&state, &req, search_revision).await {
         Ok(transaction_embedding) => {
             match store_transaction_embedding_if_current(
                 &state,
@@ -265,10 +268,12 @@ pub(crate) async fn update_transaction(
     let semantic_fields_changed = requested_fields != existing_fields;
 
     // update the financial data before making any external provider request
-    sqlx::query(
+    let search_revision = sqlx::query_scalar::<_, i32>(
         "UPDATE transactions
-         SET amount = $1, kind = $2, category = $3, date = $4, description = $5
-         WHERE id = $6 AND user_id = $7"
+         SET amount = $1, kind = $2, category = $3, date = $4, description = $5,
+             search_revision = search_revision + CASE WHEN $8 THEN 1 ELSE 0 END
+         WHERE id = $6 AND user_id = $7
+         RETURNING search_revision"
     )
     .bind(req.amount)
     .bind(&requested_fields.kind)
@@ -277,7 +282,8 @@ pub(crate) async fn update_transaction(
     .bind(requested_fields.description.as_deref())
     .bind(transaction_id)
     .bind(auth.user_id)
-    .execute(&mut *database_transaction)
+    .bind(semantic_fields_changed)
+    .fetch_one(&mut *database_transaction)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -304,6 +310,7 @@ pub(crate) async fn update_transaction(
         transaction_id,
         auth.user_id,
         &requested_fields,
+        search_revision,
     )
     .await;
 
@@ -316,6 +323,7 @@ async fn refresh_transaction_embedding(
     transaction_id: uuid::Uuid,
     user_id: uuid::Uuid,
     semantic_fields: &TransactionSemanticFields,
+    search_revision: i32,
 ) {
     // a provider failure leaves the embedding missing so semantic search can backfill it later
     let transaction_embedding = match TransactionEmbedding::generate(
@@ -323,6 +331,7 @@ async fn refresh_transaction_embedding(
         &semantic_fields.kind,
         semantic_fields.category.as_deref(),
         semantic_fields.description.as_deref(),
+        search_revision,
     )
     .await
     {
@@ -376,8 +385,9 @@ pub(crate) async fn get_transactions(
 ) -> Result<axum::Json<Vec<Transaction>>, (axum::http::StatusCode, String)> {
 
     // fetch all the user's transactions from the database
+    // keep removed transactions stored for history, but exclude them from this list
     let transactions = sqlx::query!(
-        "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1",
+        "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1 AND status <> 'removed'",
         auth.user_id
     )
     .fetch_all(&state.pool)
@@ -394,6 +404,7 @@ pub(crate) async fn get_transactions(
             kind: match transaction.kind.as_str() {
                 "income" => TransactionKind::Income,
                 "expense" => TransactionKind::Expense,
+                "transfer" => TransactionKind::Transfer,
                 _ => panic!("Invalid transaction kind in database"),
             },
             category: transaction.category,
@@ -517,6 +528,7 @@ pub(crate) async fn get_budget_progress(
 
     // join budgets with transactions to compute "spent" per category (expenses only)
     // we left join transactions to  include categories with a budget but no expenses (spent = 0)
+    // keep the status filter in the join so categories with only removed expenses still appear
     let rows = sqlx::query!(
         "SELECT
             b.category as \"category!\",
@@ -526,6 +538,7 @@ pub(crate) async fn get_budget_progress(
         LEFT JOIN transactions t
         ON t.user_id = b.user_id
         AND t.kind = 'expense'
+        AND t.status <> 'removed'
         AND t.category = b.category
         AND t.date >= $2
         AND t.date < $3
@@ -586,14 +599,19 @@ pub(crate) async fn semantic_transaction_search(
     // we take this as an opportunity to perform a backfill of the users transactions who have no entry
     // in the transaction_embeddings table yet, so we generate and insert embeddings for any such
     // transactions
+    // an embedding with the wrong user ID must be replaced for the transaction's actual owner
+    // removed transactions must not consume the limited backfill work
     let missing_rows = sqlx::query(
-        "SELECT t.id, t.user_id, t.kind, t.category, t.description
+        "SELECT t.id, t.user_id, t.kind, t.category, t.description, t.search_revision
          FROM transactions t
          WHERE t.user_id = $1
+         AND t.status <> 'removed'
          AND NOT EXISTS (
             SELECT 1
             FROM transaction_embeddings e
             WHERE e.transaction_id = t.id
+              AND e.user_id = t.user_id
+              AND e.search_revision = t.search_revision
          )
          LIMIT 5"
     )
@@ -609,12 +627,14 @@ pub(crate) async fn semantic_transaction_search(
         let kind_str: String = row.get("kind");
         let category: Option<String> = row.get("category");
         let description: Option<String> = row.get("description");
+        let search_revision: i32 = row.get("search_revision");
 
         let transaction_embedding = TransactionEmbedding::generate(
             &state,
             &kind_str,
             category.as_deref(),
             description.as_deref(),
+            search_revision,
         )
         .await;
 
@@ -652,12 +672,17 @@ pub(crate) async fn semantic_transaction_search(
     
     // we additionally filter results by a maximum cosine distance threshold to avoid returning completely irrelevant results,
     // and we limit the number of results returned based on user input (defaulting to 10, max 50)
+    // check the transaction owner too so an incorrect embedding user ID cannot expose another user's data
+    // exclude removed transactions before ordering and limiting the search results
     let rows = sqlx::query(
         "SELECT t.id, t.user_id, t.amount, t.kind, t.category, t.date, t.description,
                     1.0 - (embed.embedding <=> $2) as similarity_score
         FROM transaction_embeddings embed
-        JOIN transactions t ON t.id = embed.transaction_id
-        WHERE embed.user_id = $1 AND embed.embedding <=> $2 < $3
+        JOIN transactions t
+          ON t.id = embed.transaction_id
+         AND t.search_revision = embed.search_revision
+        WHERE embed.user_id = $1 AND t.user_id = $1 AND embed.embedding <=> $2 < $3
+        AND t.status <> 'removed'
         ORDER BY embed.embedding <=> $2
         LIMIT $4"
     )
@@ -676,6 +701,7 @@ pub(crate) async fn semantic_transaction_search(
             let kind = match kind_str.as_str() {
                 "income" => TransactionKind::Income,
                 "expense" => TransactionKind::Expense,
+                "transfer" => TransactionKind::Transfer,
                 _ => TransactionKind::Expense,
             };
 
