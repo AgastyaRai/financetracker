@@ -12,14 +12,29 @@ const PRIVATE_TABLES: &[&str] = &[
     "transaction_embeddings", "bank_connections", "imported_transaction_details",
 ];
 
+async fn create_fixture_role(pool: &PgPool, role: &str) -> Result<(), sqlx::Error> {
+    let quoted_role = role.replace('"', "\"\"");
+    match sqlx::query(&format!("CREATE ROLE \"{quoted_role}\" NOLOGIN"))
+        .execute(pool).await
+    {
+        Ok(_) => Ok(()),
+        // an existing fixture role is safe to reuse; propagate other database errors
+        // concurrent creators can instead collide on the cluster's role-name index
+        // only accept that specific uniqueness error, rather than hiding other SQL failures
+        Err(sqlx::Error::Database(error))
+            if error.code().as_deref() == Some("42710")
+                || (error.code().as_deref() == Some("23505")
+                    && error.constraint() == Some("pg_authid_rolname_index")) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 async fn supabase_fixture(pool: &PgPool) -> PgPool {
     // These cluster roles are created only by tests running against the disposable test server.
+    create_fixture_role(pool, "anon").await.unwrap();
+    create_fixture_role(pool, "authenticated").await.unwrap();
     sqlx::raw_sql(
-        "DO $$ BEGIN
-            BEGIN CREATE ROLE anon NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END;
-            BEGIN CREATE ROLE authenticated NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END;
-        END $$;
-        CREATE SCHEMA extensions;
+        "CREATE SCHEMA extensions;
         GRANT USAGE ON SCHEMA public, extensions TO anon, authenticated;
         GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated;
         ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
@@ -233,4 +248,58 @@ async fn security_setup_supports_a_separately_managed_extension_owner(pool: PgPo
     assert_eq!(schema, "extensions");
     assert_eq!(owner, "security_extension_owner");
     assert_private_permissions(&pool).await;
+}
+
+// see if two databases can create the same fixture role without a concurrent setup failure
+#[sqlx::test(migrations = false)]
+async fn security_fixture_handles_concurrent_role_creation(pool: PgPool) {
+    // use a fresh role so existing security tests cannot hide the first-creation race
+    let role = format!("security_fixture_race_{}", uuid::Uuid::new_v4().simple());
+    let mut first_creation = pool.begin().await.unwrap();
+    let first_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *first_creation).await.unwrap();
+    sqlx::query(&format!("CREATE ROLE \"{role}\" NOLOGIN"))
+        .execute(&mut *first_creation).await.unwrap();
+
+    // connect through another database; roles are shared across the disposable server
+    // one connection keeps the competing request on the backend whose lock wait we inspect
+    let competing_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(pool.connect_options().as_ref().clone().database("postgres"))
+        .await.unwrap();
+    let competing_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&competing_pool).await.unwrap();
+    let competing_role = role.clone();
+    let competing_creation = tokio::spawn(async move {
+        create_fixture_role(&competing_pool, &competing_role).await
+    });
+
+    // wait until the second CREATE ROLE is blocked by the uncommitted first creation
+    // this forces the catalog uniqueness race instead of relying on thread scheduling
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let is_blocked: bool = sqlx::query_scalar(
+                "SELECT $1 = ANY(pg_blocking_pids($2))"
+            ).bind(first_pid).bind(competing_pid).fetch_one(&pool).await.unwrap();
+            if is_blocked { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("competing role creation did not wait on the first transaction");
+
+    // committing the winner releases the second request into the exact collision seen in CI
+    first_creation.commit().await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), competing_creation)
+        .await.expect("competing role creation did not finish")
+        .unwrap();
+    assert!(result.is_ok(), "concurrent fixture role creation failed: {result:?}");
+
+    // both setups should reuse one non-login role, including when it already exists before the call
+    let can_login: bool = sqlx::query_scalar("SELECT rolcanlogin FROM pg_roles WHERE rolname = $1")
+        .bind(&role).fetch_one(&pool).await.unwrap();
+    assert!(!can_login);
+    create_fixture_role(&pool, &role).await.unwrap();
+
+    // remove only the unique role created by this test
+    sqlx::query(&format!("DROP ROLE \"{role}\""))
+        .execute(&pool).await.unwrap();
 }
