@@ -27,7 +27,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 pgvector = { version = "0.3", features = ["sqlx"] }
 async-openai = { version = "0.33", default-features = false, features = ["chat-completion"] }
 async-trait = "0.1"
+chacha20poly1305 = "0.11"
+base64 = "0.22"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+mockall = "0.15"
+wiremock = "0.6"

@@ -2,11 +2,15 @@ mod common;
 
 use async_trait::async_trait;
 use financetracker::embeddings::{EmbeddingProvider, store_transaction_embedding};
-use financetracker::build_app;
+use financetracker::{AppState, build_app};
+use financetracker::embedding_worker::process_embedding_batch;
+use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use pgvector::Vector;
-use sqlx::Row;
-use std::sync::Arc;
+use sqlx::{PgPool, Row};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::Notify;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::util::ServiceExt;
 use uuid::Uuid;
@@ -227,12 +231,13 @@ async fn test_transaction_creation_succeeds_when_fake_provider_fails() {
     assert_eq!(provider.call_count(), 1);
 }
 
-// see if searching generates and stores an embedding for a transaction that has none
-#[tokio::test]
-async fn test_fake_provider_backfills_missing_embedding() {
+// see if the worker makes a missing embedding searchable without search doing the repair
+#[sqlx::test(migrations = "backend/migrations")]
+async fn test_worker_indexes_missing_embedding_before_later_search(pool: PgPool) {
     // use a successful fake provider and set up the user who will perform the search
     let provider = Arc::new(FakeEmbeddingProvider::succeeds_with(test_embedding()));
-    let state = common::setup_app_state_with_embedding_provider(provider.clone()).await;
+    let mut state = common::setup_app_state_with_embedding_provider(provider.clone()).await;
+    state.pool = pool;
     let app = build_app(state.clone());
     let (username, password) = common::create_and_register_test_user(&app).await;
     let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
@@ -254,7 +259,22 @@ async fn test_fake_provider_backfills_missing_embedding() {
     .unwrap();
 
     let transaction_id: uuid::Uuid = transaction_row.get("id");
-    // search for transportation so the handler has to fill in the missing embedding before searching
+    // Search first: it must leave financial rows and missing embeddings for the worker.
+    let before = saved_search_data(&state).await;
+    let response = search_without_summary(&app, &access_token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let result: ReturnedSearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(result.transactions.is_empty());
+    assert_eq!(provider.call_count(), 1);
+    assert_eq!(saved_search_data(&state).await, before);
+
+    // A real bounded batch creates the embedding; a later search can then return it.
+    let batch = process_embedding_batch(&state, 10).await.unwrap();
+    assert_eq!(batch.indexed, 1);
+    assert_eq!(batch.failed, 0);
+    assert_eq!(saved_search_data(&state).await.0, before.0);
+    // search for transportation using the embedding already saved by the worker
     let search_body = serde_json::json!({
         "query": "transportation",
         "limit": 5
@@ -269,10 +289,14 @@ async fn test_fake_provider_backfills_missing_embedding() {
         .body(axum::body::Body::from(search_body.to_string()))
         .unwrap();
 
-    let search_response = app.oneshot(search_request).await.unwrap();
+    let search_response = app.clone().oneshot(search_request).await.unwrap();
     assert_eq!(search_response.status(), axum::http::StatusCode::OK);
 
-    // read the newly stored embedding alongside the transaction's current revision
+    let body = search_response.into_body().collect().await.unwrap().to_bytes();
+    let result: ReturnedSearchResult = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result.transactions.iter().map(|item| item.transaction.id).collect::<Vec<_>>(), vec![transaction_id]);
+
+    // read the worker's stored embedding alongside the transaction's current revision
     let embedding_row = sqlx::query(
         "SELECT e.embedding,
                 t.search_revision AS transaction_search_revision,
@@ -297,8 +321,8 @@ async fn test_fake_provider_backfills_missing_embedding() {
     assert_eq!(transaction_search_revision, 1);
     assert_eq!(embedding_search_revision, 1);
     assert_eq!(embedding_model, "text-embedding-3-small");
-    // expect one call for the missing transaction embedding and one for the search-query embedding
-    assert_eq!(provider.call_count(), 2);
+    // expect the first query, the worker repair, and the second query
+    assert_eq!(provider.call_count(), 3);
 }
 
 // see if a search containing only spaces is rejected before calling the embedding provider
@@ -481,11 +505,12 @@ async fn test_semantic_search_excludes_removed_transactions_before_limit() {
     );
 }
 
-#[tokio::test]
-async fn test_semantic_search_skips_removed_transactions_during_backfill() {
+#[sqlx::test(migrations = "backend/migrations")]
+async fn test_worker_indexes_posted_transactions_but_leaves_removed_transactions_unsearchable(pool: PgPool) {
     // count provider requests while searching a user who has two rows without embeddings
     let provider = Arc::new(FakeEmbeddingProvider::succeeds_with(test_embedding()));
-    let state = common::setup_app_state_with_embedding_provider(provider.clone()).await;
+    let mut state = common::setup_app_state_with_embedding_provider(provider.clone()).await;
+    state.pool = pool;
     let app = build_app(state.clone());
     let (username, password) = common::create_and_register_test_user(&app).await;
     let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
@@ -508,7 +533,20 @@ async fn test_semantic_search_skips_removed_transactions_during_backfill() {
     }
     let [posted_id, removed_id]: [Uuid; 2] = transaction_ids.try_into().unwrap();
 
-    // searching should backfill the posted transaction, skip the removed one, and embed the query
+    // Neither search nor an empty result may create embeddings for these saved rows.
+    let before = saved_search_data(&state).await;
+    let first = search_without_summary(&app, &access_token).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let body = first.into_body().collect().await.unwrap().to_bytes();
+    let first: ReturnedSearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(first.transactions.is_empty());
+    assert_eq!(saved_search_data(&state).await, before);
+
+    // The worker must index only the posted row; the following search reads that result.
+    let batch = process_embedding_batch(&state, 10).await.unwrap();
+    assert_eq!(batch.indexed, 1);
+    assert_eq!(batch.failed, 0);
+    assert_eq!(saved_search_data(&state).await.0, before.0);
     let search_body = serde_json::json!({
         "query": "food",
         "limit": 5,
@@ -527,7 +565,7 @@ async fn test_semantic_search_skips_removed_transactions_during_backfill() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let result: ReturnedSearchResult = serde_json::from_slice(&body).unwrap();
 
-    // the posted row must gain the fake vector while the removed row remains stored without an embedding
+    // the worker must supply the posted vector while the removed row remains stored without an embedding
     let posted = sqlx::query_as::<_, StoredSearchTransaction>(
         "SELECT t.status, e.embedding
          FROM transactions t
@@ -554,8 +592,8 @@ async fn test_semantic_search_skips_removed_transactions_during_backfill() {
     assert_eq!(removed.status, "removed");
     assert_eq!(
         provider.call_count(),
-        2,
-        "only the posted transaction and the search query should call the provider"
+        3,
+        "only the two queries and the worker repair should call the provider"
     );
     assert!(removed.embedding.is_none());
 
@@ -566,4 +604,193 @@ async fn test_semantic_search_skips_removed_transactions_during_backfill() {
         .map(|result| result.transaction.id)
         .collect();
     assert_eq!(returned_ids, vec![posted_id]);
+}
+
+
+// These controls distinguish query work from transaction work without contacting OpenAI.
+enum SearchProviderMode {
+    Success,
+    HoldTransactions,
+    FailQuery,
+}
+
+struct SearchEmbeddingProvider {
+    mode: SearchProviderMode,
+    requests: Mutex<Vec<String>>,
+    started: Notify,
+    release: Notify,
+}
+
+impl SearchEmbeddingProvider {
+    fn new(mode: SearchProviderMode) -> Self {
+        Self {
+            mode,
+            requests: Mutex::new(Vec::new()),
+            started: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for SearchEmbeddingProvider {
+    async fn generate_embedding(
+        &self,
+        _: &reqwest::Client,
+        _: &str,
+        text: &str,
+    ) -> Result<Vec<f32>, (StatusCode, String)> {
+        self.requests.lock().unwrap().push(text.to_string());
+        let transaction = text.starts_with("kind:");
+        if transaction && matches!(self.mode, SearchProviderMode::HoldTransactions) {
+            // Pause transaction work only; a search-query embedding remains available immediately.
+            self.started.notify_one();
+            self.release.notified().await;
+        }
+        if !transaction && matches!(self.mode, SearchProviderMode::FailQuery) {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "query embedding unavailable".to_string()));
+        }
+        Ok(test_embedding())
+    }
+}
+
+// A worker scans across owners, so every test that runs a batch needs its own database.
+async fn search_fixture(
+    pool: PgPool,
+    provider: Arc<SearchEmbeddingProvider>,
+) -> (AppState, axum::Router, Uuid, String) {
+    let mut state = common::setup_app_state_with_embedding_provider(provider).await;
+    state.pool = pool;
+    let app = build_app(state.clone());
+    let (username, password) = common::create_and_register_test_user(&app).await;
+    let (owner, token) = common::login_test_user(&app, &username, &password).await;
+    (state, app, owner, token)
+}
+
+async fn save_search_transaction(state: &AppState, owner: Uuid, description: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO transactions (user_id, amount, kind, category, date, description, origin, status)
+         VALUES ($1, -10.00, 'expense', 'Food', '2026-10-17', $2, 'imported', 'posted') RETURNING id",
+    )
+    .bind(owner).bind(description).fetch_one(&state.pool).await.unwrap()
+}
+
+async fn save_ready_embedding(state: &AppState, owner: Uuid, id: Uuid, description: &str) {
+    store_transaction_embedding(
+        state, id, owner, &format!("kind: Expense\n category: Food\n description: {description}"),
+        test_embedding(), 1, "text-embedding-3-small",
+    ).await.unwrap();
+}
+
+async fn search_without_summary(app: &axum::Router, token: &str) -> axum::response::Response {
+    let request = axum::http::Request::builder()
+        .method("POST").uri("/api/transactions/search/semantic")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(axum::body::Body::from(serde_json::json!({
+            "query": "groceries", "limit": 10, "summary": false,
+        }).to_string())).unwrap();
+    app.clone().oneshot(request).await.unwrap()
+}
+
+// Compare complete saved rows, rather than checking just a count that could hide a replacement.
+async fn saved_search_data(state: &AppState) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let transactions = sqlx::query_scalar("SELECT to_jsonb(t) FROM transactions t ORDER BY id")
+        .fetch_all(&state.pool).await.unwrap();
+    let embeddings = sqlx::query_scalar("SELECT to_jsonb(e) FROM transaction_embeddings e ORDER BY transaction_id")
+        .fetch_all(&state.pool).await.unwrap();
+    (transactions, embeddings)
+}
+
+#[sqlx::test(migrations = "backend/migrations")]
+async fn test_search_returns_ready_matches_without_indexing_unfinished_transactions(pool: PgPool) {
+    let provider = Arc::new(SearchEmbeddingProvider::new(SearchProviderMode::Success));
+    let (state, app, owner, token) = search_fixture(pool, provider.clone()).await;
+    let ready = save_search_transaction(&state, owner, "Ready groceries").await;
+    save_ready_embedding(&state, owner, ready, "Ready groceries").await;
+    for number in 0..6 {
+        save_search_transaction(&state, owner, &format!("Unfinished groceries {number}")).await;
+    }
+    let before = saved_search_data(&state).await;
+
+    // The backlog exceeds the old five-row fallback limit; search must not process any of it.
+    let response = search_without_summary(&app, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result["transactions"].as_array().unwrap().len(), 1);
+    assert_eq!(result["transactions"][0]["transaction"]["id"], ready.to_string());
+    assert!(result["summary"].is_null());
+    assert_eq!(provider.requests(), vec!["groceries"]);
+    assert_eq!(saved_search_data(&state).await, before);
+}
+
+#[sqlx::test(migrations = "backend/migrations")]
+async fn test_search_returns_empty_while_all_transactions_await_indexing(pool: PgPool) {
+    let provider = Arc::new(SearchEmbeddingProvider::new(SearchProviderMode::Success));
+    let (state, app, owner, token) = search_fixture(pool, provider.clone()).await;
+    save_search_transaction(&state, owner, "Unfinished groceries").await;
+    let before = saved_search_data(&state).await;
+
+    // An empty searchable set is valid while progress still reports unfinished transactions.
+    let response = search_without_summary(&app, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result["transactions"], serde_json::json!([]));
+    assert!(result["summary"].is_null());
+    assert_eq!(provider.requests(), vec!["groceries"]);
+    assert_eq!(saved_search_data(&state).await, before);
+}
+
+#[sqlx::test(migrations = "backend/migrations")]
+async fn test_search_finishes_while_worker_transaction_embedding_is_blocked(pool: PgPool) {
+    let provider = Arc::new(SearchEmbeddingProvider::new(SearchProviderMode::HoldTransactions));
+    let (state, app, owner, token) = search_fixture(pool, provider.clone()).await;
+    let ready = save_search_transaction(&state, owner, "Ready groceries").await;
+    save_ready_embedding(&state, owner, ready, "Ready groceries").await;
+    save_search_transaction(&state, owner, "Blocked groceries").await;
+    let before = saved_search_data(&state).await;
+
+    // Start a real batch and wait until its transaction request is deliberately held open.
+    let batch_state = state.clone();
+    let batch = tokio::spawn(async move { process_embedding_batch(&batch_state, 1).await });
+    tokio::time::timeout(Duration::from_secs(5), provider.started.notified()).await.unwrap();
+    let response = tokio::time::timeout(
+        Duration::from_secs(2), search_without_summary(&app, &token),
+    ).await;
+    let while_blocked = saved_search_data(&state).await;
+
+    // Release and join the task before asserting, including on the old handler's timeout path.
+    provider.release.notify_waiters();
+    let batch_result = tokio::time::timeout(Duration::from_secs(5), batch).await.unwrap().unwrap().unwrap();
+    assert!(response.is_ok(), "search waited for transaction indexing instead of returning existing matches");
+    let response = response.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let result: ReturnedSearchResult = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result.transactions.iter().map(|item| item.transaction.id).collect::<Vec<_>>(), vec![ready]);
+    assert_eq!(while_blocked, before);
+    assert_eq!(provider.requests().len(), 2, "only the held worker request and the query should run");
+    assert_eq!(batch_result.indexed, 1);
+}
+
+#[sqlx::test(migrations = "backend/migrations")]
+async fn test_query_embedding_failure_does_not_index_transactions_first(pool: PgPool) {
+    let provider = Arc::new(SearchEmbeddingProvider::new(SearchProviderMode::FailQuery));
+    let (state, app, owner, token) = search_fixture(pool, provider.clone()).await;
+    save_search_transaction(&state, owner, "Unfinished groceries").await;
+    let before = saved_search_data(&state).await;
+
+    // Transaction requests would succeed; only the query fails, exposing any indexing before that failure.
+    let response = search_without_summary(&app, &token).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), b"query embedding unavailable");
+    assert_eq!(provider.requests(), vec!["groceries"]);
+    assert_eq!(saved_search_data(&state).await, before);
 }

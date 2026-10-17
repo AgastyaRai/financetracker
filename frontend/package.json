@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "mock-api": "node mock-api.mjs",
     "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-plaid-link": "5.0.0",
     "recharts": "^3.6.0"
   },
   "devDependencies": {

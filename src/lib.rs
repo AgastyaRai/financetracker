@@ -3,10 +3,14 @@
 
 pub mod ai;
 pub mod app;
+pub mod bank_credentials;
 pub mod auth;
 pub mod embeddings;
+pub mod embedding_worker;
 pub mod handlers;
+mod imports;
 pub mod models;
+pub mod plaid;
 
 pub use app::build_app;
 pub use auth::verify_jwt;
