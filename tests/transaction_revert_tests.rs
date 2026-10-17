@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use financetracker::embeddings::EmbeddingProvider;
 use financetracker::{AppState, build_app};
+use financetracker::embedding_worker::process_embedding_batch;
 use http_body_util::BodyExt;
 use pgvector::Vector;
 use std::sync::{
@@ -150,6 +151,217 @@ async fn revert(app: &axum::Router, token: &str, id: uuid::Uuid) -> axum::respon
         .unwrap()
 }
 
+// Seed an imported expense with its original source; every user edit below goes through the API.
+async fn imported_fixture(
+    provider: Arc<TestProvider>,
+) -> (AppState, axum::Router, uuid::Uuid, String, uuid::Uuid) {
+    let state = common::setup_app_state_with_embedding_provider(provider).await;
+    let app = build_app(state.clone());
+    let (username, password) = common::create_and_register_test_user(&app).await;
+    let (user_id, token) = common::login_test_user(&app, &username, &password).await;
+    let id = sqlx::query_scalar(
+        "INSERT INTO transactions (user_id, amount, kind, category, description, date, origin)
+         VALUES ($1, -50.00, 'expense', 'Transportation', 'Original commute', '2026-03-01', 'imported')
+         RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    attach_original(
+        &state,
+        user_id,
+        id,
+        "expense",
+        Some("Transportation"),
+        Some("Original commute"),
+    )
+    .await;
+    (state, app, user_id, token, id)
+}
+
+#[derive(Debug, PartialEq, sqlx::FromRow)]
+struct RevertState {
+    amount: rust_decimal::Decimal,
+    date: chrono::NaiveDate,
+    kind: String,
+    category: Option<String>,
+    description: Option<String>,
+    kind_overridden: bool,
+    category_overridden: bool,
+    description_overridden: bool,
+    search_revision: i32,
+}
+
+async fn stored_revert_state(state: &AppState, id: uuid::Uuid) -> RevertState {
+    sqlx::query_as(
+        "SELECT amount, date, kind, category, description,
+                kind_overridden, category_overridden, description_overridden, search_revision
+         FROM transactions WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn revert_clears_imported_overrides_and_preserves_money_date_and_source() {
+    let provider = Arc::new(TestProvider::new(false, false));
+    let (state, app, _, token, id) = imported_fixture(provider.clone()).await;
+    let source_before: serde_json::Value = sqlx::query_scalar(
+        "SELECT to_jsonb(d) FROM imported_transaction_details d WHERE transaction_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+
+    // Change all three classifications through the real edit handler so it records the overrides.
+    // Money and date change too, but Revert must leave those user choices intact.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &token,
+            "PUT",
+            &format!("/api/transactions/{id}"),
+            serde_json::json!({
+                "amount": "-75.50", "date": "2026-03-12", "kind": "Income",
+                "category": "Travel", "description": "My commute"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let edited = stored_revert_state(&state, id).await;
+    assert_eq!(
+        (
+            edited.kind_overridden,
+            edited.category_overridden,
+            edited.description_overridden
+        ),
+        (true, true, true),
+    );
+    assert_eq!(list(&app, &token).await[0]["can_revert"], true);
+
+    // Restoring the original classifications must also release every override for future imports.
+    assert_eq!(revert(&app, &token, id).await.status(), StatusCode::OK);
+    assert_eq!(
+        stored_revert_state(&state, id).await,
+        RevertState {
+            amount: rust_decimal::Decimal::new(-7550, 2),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+            kind: "expense".to_string(),
+            category: Some("Transportation".to_string()),
+            description: Some("Original commute".to_string()),
+            kind_overridden: false,
+            category_overridden: false,
+            description_overridden: false,
+            search_revision: edited.search_revision + 1,
+        }
+    );
+    assert_eq!(list(&app, &token).await[0]["can_revert"], false);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+
+    // Revert may change the editable transaction, never the original bank record.
+    let source_after: serde_json::Value = sqlx::query_scalar(
+        "SELECT to_jsonb(d) FROM imported_transaction_details d WHERE transaction_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(source_after, source_before);
+}
+
+#[tokio::test]
+async fn revert_clears_overrides_when_values_already_match_without_refreshing_search() {
+    let provider = Arc::new(TestProvider::new(false, false));
+    let (state, app, _, token, id) = imported_fixture(provider.clone()).await;
+
+    // Edit away from the imported values, then type the originals back in.
+    // Equal values do not release overrides: only an explicit Revert should do that.
+    for (kind, category, description) in [
+        ("Income", "Travel", "My commute"),
+        ("Expense", "Transportation", "Original commute"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                &token,
+                "PUT",
+                &format!("/api/transactions/{id}"),
+                serde_json::json!({
+                    "amount": "-50.00", "date": "2026-03-01", "kind": kind,
+                    "category": category, "description": description
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let before = stored_revert_state(&state, id).await;
+    assert_eq!(before.kind, "expense");
+    assert_eq!(before.category.as_deref(), Some("Transportation"));
+    assert_eq!(before.description.as_deref(), Some("Original commute"));
+    assert_eq!(
+        (
+            before.kind_overridden,
+            before.category_overridden,
+            before.description_overridden
+        ),
+        (true, true, true),
+    );
+
+    // Both list and semantic search must offer Revert while those overrides are still active.
+    assert_eq!(list(&app, &token).await[0]["can_revert"], true);
+    let response = app
+        .clone()
+        .oneshot(request(
+            &token,
+            "POST",
+            "/api/transactions/search/semantic",
+            serde_json::json!({"query": "Original commute"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json(response).await["transactions"][0]["transaction"]["can_revert"],
+        true
+    );
+    let embedding_before: serde_json::Value = sqlx::query_scalar(
+        "SELECT to_jsonb(e) FROM transaction_embeddings e WHERE transaction_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    let calls_before = provider.calls.load(Ordering::SeqCst);
+
+    // Clearing flags alone must preserve the search revision, stored embedding, and provider call count.
+    assert_eq!(revert(&app, &token, id).await.status(), StatusCode::OK);
+    assert_eq!(
+        stored_revert_state(&state, id).await,
+        RevertState {
+            kind_overridden: false,
+            category_overridden: false,
+            description_overridden: false,
+            ..before
+        }
+    );
+    let embedding_after: serde_json::Value = sqlx::query_scalar(
+        "SELECT to_jsonb(e) FROM transaction_embeddings e WHERE transaction_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(embedding_after, embedding_before);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), calls_before);
+    assert_eq!(list(&app, &token).await[0]["can_revert"], false);
+}
+
 #[tokio::test]
 async fn revert_restores_imported_fields_and_preserves_money_date_and_source() {
     let provider = Arc::new(TestProvider::new(false, false));
@@ -293,10 +505,20 @@ async fn revert_handles_a_future_transfer_source_without_an_invalid_write() {
     assert_eq!(list(&app, &token).await[0]["kind"], "Income");
 }
 
-#[tokio::test]
-async fn embedding_failure_does_not_undo_revert_and_search_backfills_it() {
+#[sqlx::test(migrations = "backend/migrations")]
+async fn embedding_failure_does_not_undo_revert_and_worker_repairs_it(pool: sqlx::PgPool) {
     let provider = Arc::new(TestProvider::new(true, false));
-    let (state, app, user_id, token, id) = fixture(provider).await;
+    // Isolate the batch from every other test's unfinished transactions.
+    let mut state = common::setup_app_state_with_embedding_provider(provider.clone()).await;
+    state.pool = pool;
+    let app = build_app(state.clone());
+    let (username, password) = common::create_and_register_test_user(&app).await;
+    let (user_id, token) = common::login_test_user(&app, &username, &password).await;
+    common::add_transaction(&app, &token, serde_json::json!({
+        "amount": "75.50", "kind": "Income", "category": "Edited", "description": "Edited description", "date": "2026-03-12"
+    })).await;
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM transactions WHERE user_id = $1")
+        .bind(user_id).fetch_one(&state.pool).await.unwrap();
     attach_original(
         &state,
         user_id,
@@ -318,6 +540,23 @@ async fn embedding_failure_does_not_undo_revert_and_search_backfills_it() {
             .await
             .unwrap();
     assert_eq!(count, 0);
+    // Search must leave the successful Revert and its missing embedding unchanged.
+    let before = app.clone().oneshot(request(
+        &token, "POST", "/api/transactions/search/semantic",
+        serde_json::json!({"query": "Original commute", "summary": false}),
+    )).await.unwrap();
+    assert_eq!(before.status(), StatusCode::OK);
+    assert_eq!(json(before).await["transactions"], serde_json::json!([]));
+    let reverted = stored_revert_state(&state, id).await;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transaction_embeddings WHERE transaction_id = $1")
+        .bind(id).fetch_one(&state.pool).await.unwrap();
+    assert_eq!(count, 0);
+
+    // Worker repair restores searchability without changing the reverted financial fields.
+    let batch = process_embedding_batch(&state, 10).await.unwrap();
+    assert_eq!(batch.indexed, 1);
+    assert_eq!(batch.failed, 0);
+    assert_eq!(stored_revert_state(&state, id).await, reverted);
     let response = app
         .clone()
         .oneshot(request(
@@ -338,6 +577,7 @@ async fn embedding_failure_does_not_undo_revert_and_search_backfills_it() {
         matches["transactions"][0]["transaction"]["can_revert"],
         false
     );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 5);
 }
 
 #[tokio::test]

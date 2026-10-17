@@ -23,6 +23,7 @@ pub async fn generate_semantic_search_summary(
 
         let kind = match transaction.kind {
             crate::models::TransactionKind::Expense => "Expense",
+            crate::models::TransactionKind::Transfer => "Transfer",
             crate::models::TransactionKind::Income => "Income",
         };
 

@@ -9,6 +9,7 @@ import BudgetProgressSection from "./components/BudgetProgressSection";
 import BudgetEditor from "./components/BudgetEditor";
 import TransactionsSection from "./components/TransactionsSection";
 import { useRequestLifecycle } from "./hooks/useRequestLifecycle";
+import ConnectBank from "./ConnectBank";
 import type { Transaction, TransactionInput, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 import {
   addTransaction,
@@ -68,6 +69,10 @@ function monthInputLabel(monthInput: string) {
   }).format(new Date(year, month - 1, 1));
 }
 
+function roundMoney(n: number) {
+  return Number(n.toFixed(2));
+}
+
 /* ------------------------------ App ------------------------------ */
 
 // Helper function to decode JWT and extract expiry
@@ -121,6 +126,7 @@ export default function App() {
   // Transactions
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
+  const [indexingRefreshVersion, setIndexingRefreshVersion] = useState(0);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [submittingEdit, setSubmittingEdit] = useState(false);
   const [revertingTransactionId, setRevertingTransactionId] = useState<string | null>(null);
@@ -323,6 +329,7 @@ export default function App() {
       const txs = await getTransactions();
       if (!isCurrent()) return;
       setTransactions([...txs].sort((a, b) => b.date.localeCompare(a.date)));
+      setIndexingRefreshVersion((value) => value + 1);
     } catch (e) {
       if (isCurrent()) throw e;
     } finally {
@@ -373,14 +380,15 @@ export default function App() {
   const monthIncomeExpense = useMemo(() => {
     let income = 0;
     let expense = 0;
+    let net = 0;
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
-      const magnitude = Math.abs(v);
-      if (t.kind === "Income") income += magnitude;
-      else expense += magnitude;
+      if (v > 0) income += v;
+      else expense -= v;
+      net += v;
     }
-    return { income, expense, net: income - expense };
+    return { income, expense, net };
   }, [monthTx]);
 
   const cumulativeNetByDay = useMemo(() => {
@@ -390,19 +398,17 @@ export default function App() {
     for (const t of monthTx) {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
-      const magnitude = Math.abs(v);
-
       const day = Number(t.date.slice(8, 10));
       const idx = day - 1;
       if (idx < 0 || idx >= days) continue;
 
-      daily[idx] += t.kind === "Income" ? magnitude : -magnitude;
+      daily[idx] += v;
     }
 
     const cum: number[] = [];
     let s = 0;
     for (const d of daily) {
-      s += d;
+      s = roundMoney(s + d);
       cum.push(s);
     }
     return cum;
@@ -417,11 +423,12 @@ export default function App() {
       const v = Number(t.amount);
       if (!Number.isFinite(v)) continue;
       const cat = (t.category ?? "Uncategorized").trim() || "Uncategorized";
-      m.set(cat, (m.get(cat) ?? 0) + Math.abs(v));
+      m.set(cat, (m.get(cat) ?? 0) - v);
     }
 
     const items = Array.from(m.entries())
-      .map(([label, value]) => ({ label, value }))
+      .map(([label, value]) => ({ label, value: roundMoney(value) }))
+      .filter((item) => item.value > 0)
       .sort((a, b) => b.value - a.value);
 
     // top 8 is usually readable; you can bump this to 10 if you want
@@ -484,8 +491,11 @@ export default function App() {
     if (!amount || Number(amount) <= 0) return setTransactionStatus({ text: "Amount must be > 0", type: "error" });
     if (!date) return setTransactionStatus({ text: "Date is required", type: "error" });
 
+    // manual entries use a positive magnitude, sending Income as positive and Expense as negative
+    const signedAmount = (kind === "Income") ? amount : `-${amount}`;
+
     const tx: TransactionInput = {
-      amount,
+      amount: signedAmount,
       kind,
       category: category.trim() ? category.trim() : null,
       date,
@@ -544,8 +554,8 @@ export default function App() {
   async function handleTransactionWrite(transaction: Transaction, input?: TransactionInput) {
     if (!isAuthenticated || submittingEdit) return;
     setEditStatus(null);
-    if (input && (!input.amount.trim() || !Number.isFinite(Number(input.amount)) || Number(input.amount) <= 0)) {
-      setEditStatus({ text: "Amount must be greater than zero", type: "error" });
+    if (input && (!input.amount.trim() || !Number.isFinite(Number(input.amount)) || Number(input.amount) === 0)) {
+      setEditStatus({ text: "Amount must not be zero", type: "error" });
       return;
     }
     if (input && !input.date) {
@@ -751,6 +761,14 @@ export default function App() {
         </div>
       </header>
 
+      <ConnectBank onImported={async (isCurrent) => {
+        if (!isCurrent()) return;
+        await Promise.all([
+          refreshTransactions(),
+          refreshBudgets(selectedMonthStartRef.current),
+        ]);
+      }} />
+
       {/* top grid */}
       <div className="grid">
         <TransactionForm
@@ -787,6 +805,7 @@ export default function App() {
 
       {/* 4) TRANSACTIONS LAST */}
       <TransactionsSection
+        indexingRefreshVersion={indexingRefreshVersion}
         semanticQuery={semanticQuery} setSemanticQuery={setSemanticQuery}
         semanticLimit={semanticLimit} setSemanticLimit={setSemanticLimit}
         includeSummary={includeSummary} setIncludeSummary={setIncludeSummary}

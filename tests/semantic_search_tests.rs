@@ -3,6 +3,7 @@ mod common;
 use tower::util::ServiceExt;
 use http_body_util::BodyExt;
 use financetracker::{build_app, Transaction};
+use financetracker::embedding_worker::process_embedding_batch;
 
 #[derive(serde::Deserialize)]
 struct SemanticTransaction {
@@ -34,7 +35,7 @@ mod semantic_search_tests {
 
         // add an Uber-related transaction
         let uber_transaction = serde_json::json!({
-            "amount": 17.17,
+            "amount": -17.17,
             "kind": "Expense",
             "date": "2026-01-07",
             "category": "Transportation",
@@ -45,7 +46,7 @@ mod semantic_search_tests {
 
         // now create a completely unrelated transaction
         let unrelated_transaction = serde_json::json!({
-            "amount": 170.00,
+            "amount": -170.00,
             "kind": "Expense",
             "date": "2026-01-08",
             "category": "Entertainment",
@@ -94,7 +95,7 @@ mod semantic_search_tests {
 
         // add a transaction for the first user
         let transaction_user1 = serde_json::json!({
-            "amount": 117.17,
+            "amount": -117.17,
             "kind": "Expense",
             "date": "2026-01-17",
             "category": "Groceries",
@@ -109,7 +110,7 @@ mod semantic_search_tests {
 
         // add a transaction for the second user that is similar to the first user's transaction
         let transaction_user2 = serde_json::json!({
-            "amount": 217.17,
+            "amount": -217.17,
             "kind": "Expense",
             "date": "2026-01-17",
             "category": "Groceries",
@@ -147,11 +148,12 @@ mod semantic_search_tests {
         assert_eq!(descriptions_user1, vec!["Groceries from NoFrills"]);
     }
 
-    // test to see if semantic search backfills missing embeddings for this user
-    #[tokio::test]
-    async fn test_semantic_search_backfills_missing_embeddings() {
+    // test to see if the worker makes missing embeddings searchable for this user
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_semantic_search_finds_transactions_after_worker_indexing(pool: sqlx::PgPool) {
         // set up app state and register + log in a test user
-        let state = common::setup_app_state().await;
+        let mut state = common::setup_app_state().await;
+        state.pool = pool;
         let app = build_app(state.clone());
         let (username, password) = common::create_and_register_test_user(&app).await;
         let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
@@ -163,7 +165,7 @@ mod semantic_search_tests {
              VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id",
             user_id,
-            rust_decimal::Decimal::new(4242, 2),
+            rust_decimal::Decimal::new(-4242, 2),
             "expense",
             Some("Transportation".to_string()),
             chrono::NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
@@ -186,7 +188,28 @@ mod semantic_search_tests {
 
         assert!(existing_embedding.is_none());
 
-        // now perform semantic search, which should backfill the missing embedding first
+        // Searching before the batch must not generate this transaction's missing embedding.
+        let before = axum::http::Request::builder()
+            .method("POST").uri("/api/transactions/search/semantic")
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(serde_json::json!({"query": "uber", "summary": false}).to_string()))
+            .unwrap();
+        let before = app.clone().oneshot(before).await.unwrap();
+        assert_eq!(before.status(), axum::http::StatusCode::OK);
+        let body = before.into_body().collect().await.unwrap().to_bytes();
+        let before: SemanticSearchResult = serde_json::from_slice(&body).unwrap();
+        assert!(before.transactions.is_empty());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transaction_embeddings WHERE transaction_id = $1")
+            .bind(transaction_id).fetch_one(&state.pool).await.unwrap();
+        assert_eq!(count, 0);
+
+        // The worker owns repair; search becomes complete after it saves the current embedding.
+        let batch = process_embedding_batch(&state, 10).await.unwrap();
+        assert_eq!(batch.indexed, 1);
+        assert_eq!(batch.failed, 0);
+
+        // now perform semantic search using the embedding saved by the worker
         let search_body = serde_json::json!({
             "query": "uber",
             "limit": 5
@@ -212,7 +235,7 @@ mod semantic_search_tests {
         // the transaction should now be searchable
         assert!(results.iter().any(|t| t.transaction.description.as_deref() == Some("Uber ride to campus")));
 
-        // and the missing embedding row should have been created
+        // and the worker should have saved the correct transaction text
         let stored_embedding = sqlx::query!(
             "SELECT embedding_text FROM transaction_embeddings WHERE transaction_id = $1",
             transaction_id
@@ -243,7 +266,7 @@ mod semantic_search_tests {
 
         // add  transaction for this user
         let transaction = serde_json::json!({
-            "amount": 50.00,
+            "amount": -50.00,
             "kind": "Expense",
             "date": "2026-01-25",
             "category": "Food",

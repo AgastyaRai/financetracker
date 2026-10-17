@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as indexingApi from "./api";
 import { getTransactions, loginUser, setUnauthorizedCallback, updateTransaction, revertTransaction } from "./api";
 
 describe("API requests", () => {
@@ -123,5 +124,44 @@ describe("imported transaction revert request", () => {
       method: "POST", headers: expect.objectContaining({ Authorization: "Bearer revert-token" }),
     }));
     expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
+  });
+});
+
+
+describe("indexing progress API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setUnauthorizedCallback(null);
+  });
+
+  it("reads account-wide counts with authentication and supports cancellation", async () => {
+    // Return the server's counts unchanged; the client must not count visible rows.
+    const counts = { total: 331, indexed: 172, remaining: 159 };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(counts), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    localStorage.setItem("access_token", "indexing-token");
+    const controller = new AbortController();
+
+    expect(indexingApi.getIndexingStatus).toBeTypeOf("function");
+    await expect(indexingApi.getIndexingStatus(controller.signal)).resolves.toEqual(counts);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/transactions/indexing-status", expect.objectContaining({
+      method: "GET", signal: controller.signal,
+      headers: expect.objectContaining({ Authorization: "Bearer indexing-token" }),
+    }));
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty("body");
+  });
+
+  it("uses the existing session-expired handling for an indexing-status 401", async () => {
+    const logout = vi.fn();
+    setUnauthorizedCallback(logout);
+    localStorage.setItem("access_token", "expired-indexing-token");
+    localStorage.setItem("user_id", "old-user");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 401 })));
+
+    expect(indexingApi.getIndexingStatus).toBeTypeOf("function");
+    await expect(indexingApi.getIndexingStatus()).rejects.toThrow("Session expired. Please log in again.");
+    expect(logout).toHaveBeenCalledOnce();
+    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(localStorage.getItem("user_id")).toBeNull();
   });
 });

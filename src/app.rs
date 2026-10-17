@@ -27,9 +27,16 @@ pub fn build_app(state: AppState) -> axum::Router {
         .route("/users/register", axum::routing::post(register_user))
         .route("/users/login", axum::routing::post(user_login))
 
+        // bank connection routes
+        .route("/bank-connections", axum::routing::get(get_bank_connections))
+        .route("/bank-connections/link-token", axum::routing::post(create_bank_link_token))
+        .route("/bank-connections/exchange-token", axum::routing::post(exchange_bank_token))
+        .route("/bank-connections/:id/import", axum::routing::post(import_bank_transactions))
+
         // transaction routes
         .route("/transactions", axum::routing::post(add_transaction))
         .route("/transactions", axum::routing::get(get_transactions))
+        .route("/transactions/indexing-status", axum::routing::get(get_indexing_status))
         .route("/transactions/:id", axum::routing::put(update_transaction))
         .route("/transactions/:id/revert", axum::routing::post(revert_transaction))
 

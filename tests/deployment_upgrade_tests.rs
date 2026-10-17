@@ -98,7 +98,19 @@ async fn startup_migrations_upgrade_existing_rows_and_are_safe_to_repeat(pool: P
         .bind(transaction_id).bind(user_id).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO budgets (user_id, month, category, amount) VALUES ($1, '2026-10-01', 'Groceries', 250.00)")
         .bind(user_id).execute(&pool).await.unwrap();
-    let original_rows = financial_rows(&pool, user_id).await;
+    let mut expected_rows = financial_rows(&pool, user_id).await;
+    // The import migrations convert the legacy expense sign and add defaults; every other stored field must survive unchanged.
+    expected_rows["user"]["reporting_currency"] = serde_json::Value::Null;
+    let transaction = &mut expected_rows["transactions"][0];
+    transaction["amount"] = serde_json::json!(-25.50);
+    transaction["origin"] = serde_json::json!("manual");
+    transaction["status"] = serde_json::json!("posted");
+    transaction["currency"] = serde_json::Value::Null;
+    transaction["kind_overridden"] = serde_json::json!(false);
+    transaction["category_overridden"] = serde_json::json!(false);
+    transaction["description_overridden"] = serde_json::json!(false);
+    transaction["search_revision"] = serde_json::json!(1);
+    transaction["updated_at"] = transaction["created_at"].clone();
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &serde_json::json!({"sub": user_id.to_string(), "exp": chrono::Utc::now().timestamp() + 300}),
@@ -138,7 +150,7 @@ async fn startup_migrations_upgrade_existing_rows_and_are_safe_to_repeat(pool: P
         assert_eq!(transactions.as_array().unwrap().len(), 1);
         assert_eq!(transactions[0]["id"], transaction_id.to_string());
         assert_eq!(transactions[0]["can_revert"], false);
-        assert_eq!(financial_rows(&pool, user_id).await, original_rows);
+        assert_eq!(financial_rows(&pool, user_id).await, expected_rows);
         let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE version IN (9, 11) AND success ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(applied, vec![9, 11]);

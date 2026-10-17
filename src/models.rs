@@ -1,6 +1,7 @@
 use sqlx::types::Decimal;
 use std::sync::Arc;
 
+use crate::bank_credentials::BankCredentialCipher;
 use crate::embeddings::EmbeddingProvider;
 
 /* data structures */
@@ -18,6 +19,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     // embedding provider selected by production or test setup
     pub embedding_provider: Arc<dyn EmbeddingProvider>,
+    // absent until the backend has Plaid Sandbox credentials and country settings
+    pub plaid_provider: Option<Arc<dyn crate::plaid::PlaidProvider>>,
+    // validated at startup; absent when credential encryption is not configured
+    pub bank_credential_cipher: Option<Arc<BankCredentialCipher>>,
 }
 
 // struct for user registration
@@ -41,11 +46,27 @@ pub(crate) struct LoginResponse {
     pub access_token: String, // for JWT authentication
 }
 
+// the frontend supplies only Plaid's temporary token; ownership comes from the authenticated user
+#[derive(serde::Deserialize)]
+pub(crate) struct ExchangeBankTokenRequest {
+    pub public_token: String,
+}
+
+// return connection metadata without serializing the provider credential or its encrypted bytes
+#[derive(serde::Serialize, sqlx::FromRow)]
+pub(crate) struct BankConnectionResponse {
+    pub connection_id: uuid::Uuid,
+    pub provider: String,
+    pub status: String,
+}
+
+
 // enum for transaction kind
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub(crate) enum TransactionKind {
     Income,
     Expense,
+    Transfer,
 }
 
 // struct for adding a transaction (request body - no user_id)
@@ -70,6 +91,14 @@ pub struct Transaction {
     pub description: Option<String>,
     #[serde(default)]
     pub can_revert: bool,
+}
+
+// Counts describe non-removed transactions; missing or outdated embeddings remain outstanding.
+#[derive(serde::Serialize, sqlx::FromRow)]
+pub(crate) struct IndexingStatus {
+    pub total: i64,
+    pub indexed: i64,
+    pub remaining: i64,
 }
 
 #[derive(serde::Serialize)]

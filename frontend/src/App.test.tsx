@@ -11,6 +11,8 @@ const apiMocks = vi.hoisted(() => ({
   getBudgetProgress: vi.fn(),
   getBudgets: vi.fn(),
   getTransactions: vi.fn(),
+  getBankConnections: vi.fn(),
+  getIndexingStatus: vi.fn(),
   loginUser: vi.fn(),
   registerUser: vi.fn(),
   semanticSearchTransactions: vi.fn(),
@@ -32,6 +34,8 @@ beforeEach(() => {
   apiMocks.getBudgetProgress.mockResolvedValue([]);
   apiMocks.getBudgets.mockResolvedValue([]);
   apiMocks.getTransactions.mockResolvedValue([]);
+  apiMocks.getBankConnections.mockResolvedValue([]);
+  apiMocks.getIndexingStatus.mockResolvedValue({ total: 0, indexed: 0, remaining: 0 });
   apiMocks.loginUser.mockReset();
   apiMocks.registerUser.mockResolvedValue(undefined);
   apiMocks.semanticSearchTransactions.mockResolvedValue({ transactions: [], summary: null });
@@ -278,7 +282,7 @@ describe("dashboard correctness", () => {
     expect(within(budgetCard as HTMLElement).getByLabelText("Amount")).toHaveAttribute("type", "number");
   });
 
-  it("submits a transaction with Enter", async () => {
+  it("submits an Expense as a negative amount with Enter", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -291,7 +295,29 @@ describe("dashboard correctness", () => {
 
     await waitFor(() => {
       expect(apiMocks.addTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: "12.34", description: "Coffee" }),
+        expect.objectContaining({ amount: "-12.34", kind: "Expense", description: "Coffee" }),
+      );
+    });
+  });
+
+  it("submits an Income as a positive amount with Enter", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const transactionCard = screen.getByRole("heading", { name: "Add transaction" }).closest(".card");
+    expect(transactionCard).not.toBeNull();
+    await user.selectOptions(
+      within(transactionCard as HTMLElement).getByLabelText("Kind"),
+      "Income",
+    );
+    await user.type(
+      within(transactionCard as HTMLElement).getByLabelText("Description (optional)"),
+      "Salary{Enter}",
+    );
+
+    await waitFor(() => {
+      expect(apiMocks.addTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: "12.34", kind: "Income", description: "Salary" }),
       );
     });
   });
@@ -406,7 +432,7 @@ describe("dashboard correctness", () => {
     expect(within(exceededCard as HTMLElement).getByText("Over budget")).toBeInTheDocument();
   });
 
-  it("summarizes only transactions from the selected month", async () => {
+  it("uses signed amounts for selected-month totals and plots a positive Expense refund as money in", async () => {
     const now = new Date();
     const selectedMonth = [
       now.getFullYear(),
@@ -431,11 +457,19 @@ describe("dashboard correctness", () => {
         description: null,
       },
       {
-        id: "selected-month-expense",
-        amount: "25.00",
-        kind: "Expense",
+        id: "selected-month-outflow",
+        amount: "-25.00",
+        kind: "Income",
         category: "Food",
         date: `${selectedMonth}-10`,
+        description: null,
+      },
+      {
+        id: "selected-month-refund",
+        amount: "10.00",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-15`,
         description: null,
       },
       {
@@ -452,10 +486,150 @@ describe("dashboard correctness", () => {
 
     const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card");
     expect(summaryCard).not.toBeNull();
-    expect(await within(summaryCard as HTMLElement).findByText("$100.00")).toBeInTheDocument();
+    expect(await within(summaryCard as HTMLElement).findByText("$110.00")).toBeInTheDocument();
     expect(within(summaryCard as HTMLElement).getByText("$25.00")).toBeInTheDocument();
-    expect(within(summaryCard as HTMLElement).getByText("$75.00")).toBeInTheDocument();
+    expect(within(summaryCard as HTMLElement).getByText("$85.00")).toBeInTheDocument();
     expect(within(summaryCard as HTMLElement).getByText(selectedMonthLabel)).toBeInTheDocument();
+
+    const analyticsCard = screen.getByRole("heading", { name: "Analytics" }).closest(".card");
+    expect(analyticsCard).not.toBeNull();
+    expect(within(analyticsCard as HTMLElement).getByText("Money in").closest(".analyticsStat")).toHaveTextContent("$110.00");
+    expect(within(analyticsCard as HTMLElement).getByText("Money out").closest(".analyticsStat")).toHaveTextContent("$25.00");
+    expect(within(analyticsCard as HTMLElement).getByText("Net").closest(".analyticsStat")).toHaveTextContent("$85.00");
+
+    const cumulativeNetChart = within(analyticsCard as HTMLElement).getByRole("img", {
+      name: "Cumulative net chart",
+    });
+    expect(cumulativeNetChart).toHaveTextContent("Cumulative net for the selected month");
+    fireEvent.click(within(analyticsCard as HTMLElement).getByText("Daily balances", { exact: true }));
+    const balances = within(analyticsCard as HTMLElement).getByRole("table", { name: "Daily cumulative net balances" });
+    expect(within(balances).getByText("Day 14").closest("tr")).toHaveTextContent("$75.00");
+    expect(within(balances).getByText("Day 15").closest("tr")).toHaveTextContent("$85.00");
+    expect(
+      within(analyticsCard as HTMLElement).queryByRole("img", {
+        name: "Spending by category chart",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("places the minus sign before the currency symbol for negative amounts", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "coffee-outflow",
+        amount: "-25.00",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "Coffee purchase",
+      },
+    ]);
+
+    render(<App />);
+
+    const transactionRow = (await screen.findByText("Coffee purchase")).closest("tr");
+    expect(transactionRow).not.toBeNull();
+    expect(within(transactionRow as HTMLElement).getByText("-$25.00")).toBeInTheDocument();
+  });
+
+  it("treats cent-precise cancellations as zero in totals and charts", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "first-cent-outflow",
+        amount: "-0.10",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "First cent outflow",
+      },
+      {
+        id: "second-cent-outflow",
+        amount: "-0.20",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "Second cent outflow",
+      },
+      {
+        id: "exact-cent-refund",
+        amount: "0.30",
+        kind: "Expense",
+        category: "Food",
+        date: `${selectedMonth}-10`,
+        description: "Exact cent refund",
+      },
+    ]);
+
+    render(<App />);
+
+    await screen.findByText("Exact cent refund");
+
+    const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card");
+    expect(summaryCard).not.toBeNull();
+    const netTile = within(summaryCard as HTMLElement).getByText("Net").closest(".metricTile");
+    expect(netTile).not.toBeNull();
+    expect(within(netTile as HTMLElement).getByText("$0.00")).toBeInTheDocument();
+    expect(within(netTile as HTMLElement).queryByText("-$0.00")).not.toBeInTheDocument();
+
+    const analyticsCard = screen.getByRole("heading", { name: "Analytics" }).closest(".card");
+    expect(analyticsCard).not.toBeNull();
+    expect(within(analyticsCard as HTMLElement).getByText("Net").closest(".analyticsStat")).toHaveTextContent("$0.00");
+    expect(
+      within(analyticsCard as HTMLElement).queryByRole("img", {
+        name: "Spending by category chart",
+      }),
+    ).not.toBeInTheDocument();
+
+    const cumulativeNetChart = within(analyticsCard as HTMLElement).getByRole("img", {
+      name: "Cumulative net chart",
+    });
+    expect(cumulativeNetChart).toHaveTextContent("Lowest: $0.00. Highest: $0.00.");
+  });
+
+  it("omits an Expense category when its refunds exceed its outflows", async () => {
+    const now = new Date();
+    const selectedMonth = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+    ].join("-");
+    apiMocks.getTransactions.mockResolvedValue([
+      {
+        id: "grocery-outflow",
+        amount: "-10.00",
+        kind: "Expense",
+        category: "Groceries",
+        date: `${selectedMonth}-05`,
+        description: null,
+      },
+      {
+        id: "grocery-refund",
+        amount: "25.00",
+        kind: "Expense",
+        category: "Groceries",
+        date: `${selectedMonth}-06`,
+        description: null,
+      },
+    ]);
+
+    render(<App />);
+
+    const analyticsCard = screen.getByRole("heading", { name: "Analytics" }).closest(".card");
+    expect(analyticsCard).not.toBeNull();
+    expect(
+      await within(analyticsCard as HTMLElement).findByText("No net spending for this month."),
+    ).toBeInTheDocument();
+    expect(
+      within(analyticsCard as HTMLElement).queryByRole("img", { name: "Spending by category chart" }),
+    ).not.toBeInTheDocument();
   });
 
   it("normalizes signed expense amounts in summaries and category bars", async () => {
@@ -479,7 +653,7 @@ describe("dashboard correctness", () => {
 
     const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card");
     expect(summaryCard).not.toBeNull();
-    const expenseTile = (await within(summaryCard as HTMLElement).findByText("Expense")).closest(".metricTile");
+    const expenseTile = (await within(summaryCard as HTMLElement).findByText("Money out")).closest(".metricTile");
     const netTile = within(summaryCard as HTMLElement).getByText("Net").closest(".metricTile");
     expect(expenseTile).not.toBeNull();
     expect(netTile).not.toBeNull();
@@ -704,7 +878,7 @@ describe("dashboard request lifecycle", () => {
       oldRequest.resolve([{ ...privateSearchResult("Private transaction").transactions[0].transaction, amount: "700.00" }]);
     });
     const summaryCard = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
-    const expenseTile = within(summaryCard).getByText("Expense").closest(".metricTile") as HTMLElement;
+    const expenseTile = within(summaryCard).getByText("Money out").closest(".metricTile") as HTMLElement;
     expect(expenseTile).toHaveTextContent("$0.00");
     await act(async () => { nextRequest.resolve([]); });
   });
@@ -870,7 +1044,7 @@ describe("responsive chart data", () => {
   it("offers daily balances with the same signed values shown in the chart", async () => {
     const user = userEvent.setup();
     apiMocks.getTransactions.mockResolvedValue([
-      { id: "only-expense", amount: "25.00", kind: "Expense", category: fullCategory, date: monthValue() + "-01", description: null },
+      { id: "only-expense", amount: "-25.00", kind: "Expense", category: fullCategory, date: monthValue() + "-01", description: null },
     ]);
     render(<App />);
     await screen.findByRole("img", { name: "Cumulative net chart" });
@@ -942,7 +1116,7 @@ describe("transaction editing", () => {
     const user = userEvent.setup();
     render(<App />);
     const form = await openEditor(user);
-    expect(form.getByLabelText("Amount")).toHaveValue(25);
+    expect(form.getByLabelText("Amount")).toHaveValue(-25);
     expect(form.getByLabelText("Amount")).toHaveFocus();
     expect(form.getByLabelText("Kind")).toHaveValue("Expense");
     expect(form.getByLabelText("Date")).toHaveValue(monthValue() + "-10");
@@ -984,8 +1158,8 @@ describe("transaction editing", () => {
     await waitFor(() => expect(apiMocks.getTransactions).toHaveBeenCalledTimes(2));
     expect(apiMocks.getBudgetProgress).toHaveBeenLastCalledWith(monthValue() + "-01");
     const summary = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
-    expect(within(summary).getByText("Income").closest(".metricTile")).toHaveTextContent("$40.50");
-    expect(within(summary).getByText("Expense").closest(".metricTile")).toHaveTextContent("$0.00");
+    expect(within(summary).getByText("Money in").closest(".metricTile")).toHaveTextContent("$40.50");
+    expect(within(summary).getByText("Money out").closest(".metricTile")).toHaveTextContent("$0.00");
   });
 
   it("saves empty optional fields as null", async () => {
@@ -999,8 +1173,31 @@ describe("transaction editing", () => {
     await user.type(form.getByLabelText("Category (optional)"), "   ");
     await user.click(form.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(apiMocks.updateTransaction).toHaveBeenCalledWith("edit-coffee", expect.objectContaining({
-      amount: "25.00", category: null, description: null,
+      amount: "-25.00", category: null, description: null,
     })));
+  });
+
+  it.each([
+    { kind: "Expense", amount: "-25.00" },
+    { kind: "Expense", amount: "25.00" },
+    { kind: "Transfer", amount: "-25.00" },
+  ] as const)("preserves signed $kind amount $amount when editing only the category", async ({ kind, amount }) => {
+    const user = userEvent.setup();
+
+    // Load an imported outflow, refund, or transfer with its existing signed amount.
+    apiMocks.getTransactions.mockResolvedValue([{ ...originalTransaction(), kind, amount }]);
+    render(<App />);
+    const form = await openEditor(user);
+    expect(form.getByLabelText("Amount")).toHaveValue(Number(amount));
+    expect(form.getByLabelText("Kind")).toHaveValue(kind);
+
+    // Changing a descriptive field must not change the direction of the money.
+    await user.clear(form.getByLabelText("Category (optional)"));
+    await user.type(form.getByLabelText("Category (optional)"), "Travel");
+    await user.click(form.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiMocks.updateTransaction).toHaveBeenCalledWith(
+      "edit-coffee", expect.objectContaining({ kind, amount, category: "Travel" }),
+    ));
   });
 
   it("rejects a zero amount without sending a request", async () => {
@@ -1009,7 +1206,7 @@ describe("transaction editing", () => {
     const form = await openEditor(user);
     fireEvent.change(form.getByLabelText("Amount"), { target: { value: "0" } });
     fireEvent.submit(screen.getByRole("form", { name: "Edit transaction" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Amount must be greater than zero");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Amount must not be zero");
     expect(apiMocks.updateTransaction).not.toHaveBeenCalled();
   });
 
@@ -1225,7 +1422,8 @@ describe("imported transaction revert", () => {
     expect(apiMocks.getBudgetProgress).toHaveBeenLastCalledWith(monthValue() + "-01");
     expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledTimes(2);
     const summary = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
-    expect(within(summary).getByText("Expense").closest(".metricTile")).toHaveTextContent("$75.50");
+    expect(within(summary).getByText("Money in").closest(".metricTile")).toHaveTextContent("$75.50");
+    expect(within(summary).getByText("Money out").closest(".metricTile")).toHaveTextContent("$0.00");
   });
 
   it("keeps the row and allows retry when revert fails", async () => {
@@ -1284,5 +1482,117 @@ describe("imported transaction revert", () => {
     expect(screen.getByRole("heading", { name: "FinanceTracker" })).toBeInTheDocument();
     expect(screen.queryByText("Imported fields reverted successfully.")).not.toBeInTheDocument();
     expect(apiMocks.getTransactions).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("indexing progress integration", () => {
+  const counts = { total: 331, indexed: 172, remaining: 159 };
+  const preparing = "Preparing search: 172 of 331 transactions ready, 159 remaining.";
+  const ready = "All 331 transactions ready for search";
+
+  beforeEach(() => {
+    localStorage.setItem("access_token", tokenWithExpiry(Date.now() + 3_600_000));
+    apiMocks.getIndexingStatus.mockResolvedValue(counts);
+  });
+
+  it("shows account-wide progress after login and reload, independently of the selected month", async () => {
+    // Start signed out so this covers login, not only restoring a stored token.
+    localStorage.clear();
+    const user = userEvent.setup();
+    apiMocks.loginUser.mockResolvedValue({ access_token: tokenWithExpiry(Date.now() + 3_600_000), user_id: "indexing-user" });
+    const view = render(<App />);
+    expect(apiMocks.getIndexingStatus).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Username or Email"), "indexing-user");
+    await user.type(screen.getByLabelText("Password"), "password{Enter}");
+    expect(await screen.findByText(preparing)).toBeInTheDocument();
+    expect(screen.getByText("No transactions yet.")).toBeInTheDocument();
+
+    // The server counts all transactions, so changing the dashboard month must not replace them.
+    const calls = apiMocks.getIndexingStatus.mock.calls.length;
+    fireEvent.change(screen.getAllByLabelText("Month")[0], { target: { value: "2026-01" } });
+    expect(screen.getByText(preparing)).toBeInTheDocument();
+    expect(apiMocks.getIndexingStatus).toHaveBeenCalledTimes(calls);
+    view.unmount();
+    apiMocks.getIndexingStatus.mockResolvedValue({ total: 331, indexed: 331, remaining: 0 });
+    render(<App />);
+    expect(await screen.findByText(ready)).toBeInTheDocument();
+    expect(apiMocks.getIndexingStatus.mock.calls.length).toBeGreaterThan(calls);
+  });
+
+  it("keeps the dashboard usable while the status request is pending", async () => {
+    const status = deferred<typeof counts>();
+    apiMocks.getIndexingStatus.mockReturnValue(status.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Loading search indexing progress…")).toBeInTheDocument());
+
+    // A delayed progress response must not lock search, financial writes, or bank controls.
+    await user.type(screen.getByLabelText("Semantic search query"), "groceries");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    expect(apiMocks.semanticSearchTransactions).toHaveBeenCalledWith(expect.objectContaining({ query: "groceries" }));
+    expect(screen.getByRole("button", { name: "Add" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save budget" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Connect bank" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Logout" })).toBeEnabled();
+    await act(async () => status.resolve(counts));
+  });
+
+  it.each(["create", "edit", "revert"])("rechecks completed progress after a successful transaction %s", async (operation) => {
+    const user = userEvent.setup();
+    const transaction: Transaction = {
+      id: "progress-import", amount: "-12.50", kind: "Expense", category: "Food",
+      date: monthValue() + "-12", description: "Imported grocery", can_revert: true,
+    };
+    apiMocks.getTransactions.mockResolvedValue([transaction]);
+    apiMocks.revertTransaction.mockResolvedValue({ kind: "Expense", category: "Food", description: "Original grocery" });
+    apiMocks.getIndexingStatus.mockResolvedValue({ total: 331, indexed: 331, remaining: 0 });
+    render(<App />);
+    await screen.findByText(ready);
+    await screen.findByText("Imported grocery");
+    const calls = apiMocks.getIndexingStatus.mock.calls.length;
+    apiMocks.getIndexingStatus.mockResolvedValue(counts);
+
+    // Each existing save path already reloads transactions; that refresh must also recheck indexing.
+    if (operation === "create") {
+      await user.click(screen.getByRole("button", { name: "Add" }));
+      expect(apiMocks.addTransaction).toHaveBeenCalledOnce();
+    } else if (operation === "edit") {
+      await user.click(screen.getByRole("button", { name: /Edit transaction: Imported grocery/ }));
+      const row = screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement;
+      await user.clear(within(row).getByLabelText("Description (optional)"));
+      await user.type(within(row).getByLabelText("Description (optional)"), "Corrected grocery");
+      await user.click(within(row).getByRole("button", { name: "Save changes" }));
+      expect(apiMocks.updateTransaction).toHaveBeenCalledOnce();
+    } else {
+      await user.click(screen.getByRole("button", { name: /Revert imported fields: Imported grocery/ }));
+      expect(apiMocks.revertTransaction).toHaveBeenCalledOnce();
+    }
+    expect(await screen.findByText(preparing)).toBeInTheDocument();
+    expect(apiMocks.getIndexingStatus).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it.each(["success", "failure"])("ignores an old session's pending status %s after logout and another login", async (outcome) => {
+    const old = deferred<typeof counts>();
+    apiMocks.getIndexingStatus.mockReturnValue(old.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Loading search indexing progress…");
+    await waitFor(() => expect(apiMocks.getTransactions).toHaveBeenCalledOnce());
+    const signals = apiMocks.getIndexingStatus.mock.calls.map(([signal]) => signal as AbortSignal);
+    await user.click(screen.getByRole("button", { name: "Logout" }));
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(screen.queryByText(/search indexing progress|Preparing search/)).not.toBeInTheDocument();
+
+    // A new account has its own counts; the previous request may finish in either direction.
+    apiMocks.getIndexingStatus.mockResolvedValue({ total: 2, indexed: 2, remaining: 0 });
+    apiMocks.loginUser.mockResolvedValue({ access_token: tokenWithExpiry(Date.now() + 7_200_000), user_id: "new-user" });
+    await user.type(screen.getByLabelText("Username or Email"), "new-user");
+    await user.type(screen.getByLabelText("Password"), "password{Enter}");
+    await screen.findByText("All 2 transactions ready for search");
+    await act(async () => outcome === "success" ? old.resolve(counts) : old.reject(new Error("old account unavailable")));
+    expect(screen.getByText("All 2 transactions ready for search")).toBeInTheDocument();
+    expect(screen.queryByText(preparing)).not.toBeInTheDocument();
+    expect(screen.queryByText("Could not load search indexing progress.")).not.toBeInTheDocument();
   });
 });

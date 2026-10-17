@@ -13,7 +13,7 @@ type Props = {
 };
 
 export default function TransactionEditor({ transaction, similarity, showSimilarity, submitting, status, onSave, onCancel }: Props) {
-  const [amount, setAmount] = useState(() => transaction.amount.replace(/^-/, ""));
+  const [amount, setAmount] = useState(() => transaction.amount);
   const [kind, setKind] = useState<TransactionKind>(transaction.kind);
   const [date, setDate] = useState(transaction.date);
   const [category, setCategory] = useState(transaction.category ?? "");
@@ -47,6 +47,7 @@ export default function TransactionEditor({ transaction, similarity, showSimilar
           >
             <option value="Expense">Expense</option>
             <option value="Income">Income</option>
+            <option value="Transfer">Transfer</option>
           </select>
         </td>
         <td>
@@ -65,7 +66,7 @@ export default function TransactionEditor({ transaction, similarity, showSimilar
         <td>
           <input
             form={formId} aria-label="Amount" aria-describedby={errorId}
-            type="number" inputMode="decimal" min="0.01" step="0.01" required autoFocus disabled={submitting}
+            type="number" inputMode="decimal" step="0.01" required autoFocus disabled={submitting}
             value={amount} onChange={(event) => setAmount(event.target.value)}
           />
         </td>

@@ -15,11 +15,12 @@ export function buildExpenseByCategory(transactions: Transaction[]) {
     if (Number.isNaN(amt)) continue;
 
     const cat = (t.category ?? "Uncategorized").trim() || "Uncategorized";
-    totals[cat] = (totals[cat] ?? 0) + amt;
+    totals[cat] = (totals[cat] ?? 0) - amt;
   }
 
   return Object.entries(totals)
     .map(([category, total]) => ({ category, total: Number(total.toFixed(2)) }))
+    .filter((item) => item.total > 0)
     .sort((a, b) => b.total - a.total);
 }
 
@@ -37,8 +38,8 @@ export function buildDailyTotals(transactions: Transaction[]) {
     const date = t.date; // already "YYYY-MM-DD"
     if (!byDate[date]) byDate[date] = { income: 0, expense: 0 };
 
-    if (t.kind === "Income") byDate[date].income += amt;
-    else byDate[date].expense += amt;
+    if (amt > 0) byDate[date].income += amt;
+    else byDate[date].expense -= amt;
   }
 
   return Object.entries(byDate)

@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import TransactionEditor from "./TransactionEditor";
+import IndexingProgress from "./IndexingProgress";
 import type { Transaction, TransactionInput, SemanticSearchResult } from "../types";
 import { money } from "../format";
 import StatusMessageView, { type StatusMessage } from "./StatusMessageView";
 
 type Props = {
+  indexingRefreshVersion: number;
   semanticQuery: string;
   setSemanticQuery: (value: string) => void;
   semanticLimit: string;
@@ -29,7 +31,7 @@ type Props = {
 };
 
 export default function TransactionsSection({
-  semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction, handleRevertTransaction, revertingTransactionId
+  indexingRefreshVersion, semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction, handleRevertTransaction, revertingTransactionId
 }: Props) {
   const shownSemanticTransactions = semanticResults?.transactions ?? null;
   const shownRows: Array<{ transaction: Transaction; similarity?: number }> = shownSemanticTransactions
@@ -100,6 +102,8 @@ export default function TransactionsSection({
   return (
     <div className="card">
       <h2>Transactions</h2>
+      {/* A transaction refresh discards old counts and restarts completed or failed polling. */}
+      <IndexingProgress key={indexingRefreshVersion} />
 
       <form
         className="transactionSearch"

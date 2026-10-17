@@ -1,4 +1,6 @@
-import type { LoginResponse, Transaction, TransactionInput, Budget, BudgetProgress, SemanticSearchResult } from "./types";
+import type { LoginResponse, Transaction, TransactionInput, Budget, BudgetProgress, SemanticSearchResult, IndexingStatus } from "./types";
+
+import type { BankLinkToken, BankConnectionResponse, BankImportResponse } from "./types";
 
 // If using Vite proxy, keep API_BASE = "/api"
 const API_BASE = "/api";
@@ -99,6 +101,32 @@ export async function revertTransaction(id: string) {
 
 export async function getTransactions() {
   return await request<Transaction[]>("/transactions", { method: "GET" });
+}
+
+export async function getIndexingStatus(signal?: AbortSignal) {
+  return await request<IndexingStatus>("/transactions/indexing-status", { method: "GET", signal });
+}
+
+
+/* bank connections */
+
+export async function getBankConnections() {
+  return await request<BankConnectionResponse[]>("/bank-connections", { method: "GET" });
+}
+
+export async function createBankLinkToken() {
+  return await request<BankLinkToken>("/bank-connections/link-token", { method: "POST" });
+}
+
+export async function exchangeBankToken(publicToken: string) {
+  return await request<BankConnectionResponse>("/bank-connections/exchange-token", {
+    method: "POST",
+    body: JSON.stringify({ public_token: publicToken }),
+  });
+}
+
+export async function importBankTransactions(connectionId: string) {
+  return await request<BankImportResponse>(`/bank-connections/${encodeURIComponent(connectionId)}/import`, { method: "POST" });
 }
 
 /* budgets */

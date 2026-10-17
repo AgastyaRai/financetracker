@@ -17,11 +17,11 @@ export default function SummaryCard({
 
       <div className="summaryMetrics">
         <div className="metricTile">
-          <span className="metricLabel">Income</span>
+          <span className="metricLabel">Money in</span>
           <strong className="metricValue income">{money(summary.income)}</strong>
         </div>
         <div className="metricTile">
-          <span className="metricLabel">Expense</span>
+          <span className="metricLabel">Money out</span>
           <strong className="metricValue expense">{money(summary.expense)}</strong>
         </div>
         <div className="metricTile">

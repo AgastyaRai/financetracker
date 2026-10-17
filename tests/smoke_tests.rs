@@ -38,6 +38,8 @@ mod tests {
             openai_api_key: "test_openai_key".to_string(),
             http_client: reqwest::Client::new(),
             embedding_provider: std::sync::Arc::new(financetracker::embeddings::OpenAIEmbeddingProvider),
+            plaid_provider: None,
+            bank_credential_cipher: None,
         };
 
         // build the app router with the state

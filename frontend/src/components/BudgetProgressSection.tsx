@@ -28,7 +28,7 @@ export default function BudgetProgressSection({
         <p className="muted" style={{ marginTop: 12 }}>Loading…</p>
       ) : progress.length === 0 ? (
         <p className="muted" style={{ marginTop: 12 }}>
-          No progress yet — create budgets for this month, then add expense transactions with matching categories.
+          No progress yet. Create budgets for this month, then add expense transactions with matching categories.
         </p>
       ) : (
         <div className="budgetProgressList">

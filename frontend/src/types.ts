@@ -1,4 +1,20 @@
-export type TransactionKind = "Income" | "Expense";
+export type TransactionKind = "Income" | "Expense" | "Transfer";
+
+
+export type BankLinkToken = {
+  link_token: string;
+  expiration: string;
+};
+
+export type BankConnectionResponse = {
+  connection_id: string;
+  provider: string;
+  status: string;
+};
+
+export type BankImportResponse = {
+  imported: number;
+};
 
 export type Transaction = {
   id: string;
@@ -8,6 +24,12 @@ export type Transaction = {
   date: string; // "YYYY-MM-DD"
   description: string | null;
   can_revert?: boolean;
+};
+
+export type IndexingStatus = {
+  total: number;
+  indexed: number;
+  remaining: number;
 };
 
 export type TransactionInput = Omit<Transaction, "id" | "can_revert">;

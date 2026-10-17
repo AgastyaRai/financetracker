@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pgvector::Vector;
 use sqlx::Row;
 
+use crate::bank_credentials::CredentialContext;
 use crate::models::*;
 use crate::embeddings::*;
 use crate::ai::generate_semantic_search_summary;
@@ -111,6 +112,123 @@ pub(crate) async fn user_login(
 }
 
 
+/* bank connections */
+
+// read saved connection metadata for the authenticated user without contacting Plaid
+pub(crate) async fn get_bank_connections(
+    user: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::Json<Vec<BankConnectionResponse>>, (StatusCode, String)> {
+    // Select only public fields; the login token determines whose connections can be read.
+    let connections = sqlx::query_as::<_, BankConnectionResponse>(
+        "SELECT connection_id, provider, status FROM bank_connections WHERE user_id = $1",
+    )
+    .bind(user.user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Could not load bank connections".to_string(),
+    ))?;
+
+    Ok(axum::Json(connections))
+}
+
+// authenticate before creating a short-lived token; a connection is saved only after exchange
+pub(crate) async fn create_bank_link_token(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<axum::Json<crate::plaid::LinkToken>, (StatusCode, String)> {
+    let provider = state.plaid_provider.as_ref().ok_or_else(|| (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Bank linking is not configured".to_string(),
+    ))?;
+
+    // Plaid authentication errors describe our backend credentials, not the user's login
+    let token = provider.create_link_token(user.user_id).await.map_err(|_| (
+        StatusCode::BAD_GATEWAY,
+        "Could not create a bank-linking token".to_string(),
+    ))?;
+
+    Ok(axum::Json(token))
+}
+
+// finish linking only after authentication, provider exchange, encryption, and a successful insert
+pub(crate) async fn exchange_bank_token(
+    user: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Json(req): axum::Json<ExchangeBankTokenRequest>,
+) -> Result<(StatusCode, axum::Json<BankConnectionResponse>), (StatusCode, String)> {
+    if req.public_token.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Public token must not be blank".to_string()));
+    }
+
+    // verify both prerequisites before consuming the one-use token returned by Link
+    let provider = state.plaid_provider.as_ref().ok_or_else(|| (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Bank linking is not configured".to_string(),
+    ))?;
+    let cipher = state.bank_credential_cipher.as_ref().ok_or_else(|| (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Bank credential encryption is not configured".to_string(),
+    ))?;
+
+    // complete the external call before touching the database; no transaction or lock spans Plaid
+    let connection = provider.exchange_public_token(&req.public_token).await.map_err(|_| (
+        StatusCode::BAD_GATEWAY,
+        "Could not complete bank linking".to_string(),
+    ))?;
+    let context = CredentialContext {
+        user_id: user.user_id,
+        provider: "plaid",
+        provider_id: &connection.provider_id,
+    };
+    let encrypted_access_token = cipher.encrypt(&connection.access_token, &context).map_err(|_| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Could not secure bank connection".to_string(),
+    ))?;
+
+    // exchange cannot be rolled back with the insert; report save failures without retrying the token
+    let saved = save_bank_connection(&state.pool, &context, &encrypted_access_token).await
+        .map_err(|error| {
+            if error.as_database_error().is_some_and(|error| error.is_unique_violation()) {
+                return (StatusCode::CONFLICT, "Bank connection already exists".to_string());
+            }
+            (StatusCode::INTERNAL_SERVER_ERROR, "Could not save bank connection".to_string())
+        })?;
+    Ok((StatusCode::CREATED, axum::Json(saved)))
+}
+
+// one insert uses the same owner/provider context as encryption; uniqueness protects existing rows
+async fn save_bank_connection(
+    pool: &sqlx::PgPool,
+    context: &CredentialContext<'_>,
+    encrypted_access_token: &[u8],
+) -> Result<BankConnectionResponse, sqlx::Error> {
+    sqlx::query_as::<_, BankConnectionResponse>(
+        "INSERT INTO bank_connections (user_id, provider, provider_id, encrypted_access_token)
+         VALUES ($1, $2, $3, $4)
+         RETURNING connection_id, provider, status",
+    )
+    .bind(context.user_id)
+    .bind(context.provider)
+    .bind(context.provider_id)
+    .bind(encrypted_access_token)
+    .fetch_one(pool)
+    .await
+}
+
+
+// import the authenticated user's saved connection; no Plaid credential is accepted from the frontend
+pub(crate) async fn import_bank_transactions(
+    user: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(connection_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<axum::Json<crate::imports::ImportResponse>, (StatusCode, String)> {
+    crate::imports::import_transactions(&state, user.user_id, connection_id).await.map(axum::Json)
+}
+
+
 /* transactions */
 
 // semantic fields currently stored for a transaction
@@ -128,6 +246,7 @@ impl TransactionSemanticFields {
         let kind = match req.kind {
             TransactionKind::Income => "income",
             TransactionKind::Expense => "expense",
+            TransactionKind::Transfer => "transfer",
         };
 
         Self {
@@ -142,10 +261,10 @@ impl TransactionSemanticFields {
 fn validate_transaction_request(
     req: &AddTransactionRequest,
 ) -> Result<(), (StatusCode, String)> {
-    if req.amount <= rust_decimal::Decimal::ZERO {
+    if req.amount == rust_decimal::Decimal::ZERO {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Amount must be greater than zero".to_string(),
+            "Amount must not be zero".to_string(),
         ));
     }
 
@@ -165,11 +284,12 @@ pub(crate) async fn add_transaction(
     let transaction_type = match req.kind {
         TransactionKind::Income => "income",
         TransactionKind::Expense => "expense",
+        TransactionKind::Transfer => "transfer",
     };
 
     // insert the transaction into the database
     let inserted_transaction = sqlx::query!("INSERT into transactions (user_id, amount, kind, category, date, description)
-        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, search_revision",
         auth.user_id,
         req.amount,
         transaction_type,
@@ -182,10 +302,11 @@ pub(crate) async fn add_transaction(
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let transaction_id = inserted_transaction.id;
+    let search_revision = inserted_transaction.search_revision;
 
     // now we call our embedding generation function to generate an embedding for this transaction
     // store the embedding in the database linked to this transaction
-    match TransactionEmbedding::generate_from_request(&state, &req).await {
+    match TransactionEmbedding::generate_from_request(&state, &req, search_revision).await {
         Ok(transaction_embedding) => {
             match store_transaction_embedding_if_current(
                 &state,
@@ -209,7 +330,7 @@ pub(crate) async fn add_transaction(
                         user_id = %auth.user_id,
                         status = %status,
                         error = %error,
-                        "transaction created without a stored embedding; semantic search will retry it"
+                        "transaction created without a stored embedding; the background worker will retry it"
                     );
                 }
             }
@@ -220,7 +341,7 @@ pub(crate) async fn add_transaction(
                 user_id = %auth.user_id,
                 status = %status,
                 error = %error,
-                "transaction created without an embedding; semantic search will retry it"
+                "transaction created without an embedding; the background worker will retry it"
             );
         }
     }
@@ -264,11 +385,17 @@ pub(crate) async fn update_transaction(
 
     let semantic_fields_changed = requested_fields != existing_fields;
 
+    // compare each imported field with its stored value and preserve flags already set
     // update the financial data before making any external provider request
-    sqlx::query(
+    let search_revision = sqlx::query_scalar::<_, i32>(
         "UPDATE transactions
-         SET amount = $1, kind = $2, category = $3, date = $4, description = $5
-         WHERE id = $6 AND user_id = $7"
+         SET amount = $1, kind = $2, category = $3, date = $4, description = $5,
+             kind_overridden = kind_overridden OR (origin = 'imported' AND kind IS DISTINCT FROM $2),
+             category_overridden = category_overridden OR (origin = 'imported' AND category IS DISTINCT FROM $3),
+             description_overridden = description_overridden OR (origin = 'imported' AND description IS DISTINCT FROM $5),
+             search_revision = search_revision + CASE WHEN $8 THEN 1 ELSE 0 END
+         WHERE id = $6 AND user_id = $7
+         RETURNING search_revision"
     )
     .bind(req.amount)
     .bind(&requested_fields.kind)
@@ -277,7 +404,8 @@ pub(crate) async fn update_transaction(
     .bind(requested_fields.description.as_deref())
     .bind(transaction_id)
     .bind(auth.user_id)
-    .execute(&mut *database_transaction)
+    .bind(semantic_fields_changed)
+    .fetch_one(&mut *database_transaction)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -304,6 +432,7 @@ pub(crate) async fn update_transaction(
         transaction_id,
         auth.user_id,
         &requested_fields,
+        search_revision,
     )
     .await;
 
@@ -358,20 +487,25 @@ pub(crate) async fn revert_transaction(
     };
     let semantic_fields_changed = original_fields != existing_fields;
 
+    // Only the three editable import classifications are restored; money and date stay current.
+    // Release overrides even when the user has already typed the original values back in.
+    let search_revision = sqlx::query_scalar::<_, i32>(
+        "UPDATE transactions SET kind = $1, category = $2, description = $3,
+         kind_overridden = FALSE, category_overridden = FALSE, description_overridden = FALSE,
+         search_revision = search_revision + CASE WHEN $6 THEN 1 ELSE 0 END
+         WHERE id = $4 AND user_id = $5 RETURNING search_revision"
+    )
+    .bind(&original_fields.kind)
+    .bind(original_fields.category.as_deref())
+    .bind(original_fields.description.as_deref())
+    .bind(transaction_id)
+    .bind(auth.user_id)
+    .bind(semantic_fields_changed)
+    .fetch_one(&mut *database_transaction)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     if semantic_fields_changed {
-        // Only the three editable import classifications are restored; money and date stay current.
-        sqlx::query(
-            "UPDATE transactions SET kind = $1, category = $2, description = $3
-             WHERE id = $4 AND user_id = $5"
-        )
-        .bind(&original_fields.kind)
-        .bind(original_fields.category.as_deref())
-        .bind(original_fields.description.as_deref())
-        .bind(transaction_id)
-        .bind(auth.user_id)
-        .execute(&mut *database_transaction)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         sqlx::query("DELETE FROM transaction_embeddings WHERE transaction_id = $1")
             .bind(transaction_id)
             .execute(&mut *database_transaction)
@@ -385,7 +519,7 @@ pub(crate) async fn revert_transaction(
 
     // Provider failure cannot undo a restore; guarded storage also rejects delayed results after a newer edit.
     if semantic_fields_changed {
-        refresh_transaction_embedding(&state, transaction_id, auth.user_id, &original_fields).await;
+        refresh_transaction_embedding(&state, transaction_id, auth.user_id, &original_fields, search_revision).await;
     }
 
     Ok(axum::Json(RevertedTransactionFields {
@@ -412,7 +546,8 @@ async fn revertible_transaction_ids(
            AND d.inferred_kind IN ('income', 'expense')
            AND (t.kind IS DISTINCT FROM d.inferred_kind
              OR t.category IS DISTINCT FROM d.inferred_category
-             OR t.description IS DISTINCT FROM d.inferred_description)"
+             OR t.description IS DISTINCT FROM d.inferred_description
+             OR t.kind_overridden OR t.category_overridden OR t.description_overridden)"
     )
     .bind(user_id)
     .bind(transaction_ids)
@@ -429,13 +564,15 @@ async fn refresh_transaction_embedding(
     transaction_id: uuid::Uuid,
     user_id: uuid::Uuid,
     semantic_fields: &TransactionSemanticFields,
+    search_revision: i32,
 ) {
-    // a provider failure leaves the embedding missing so semantic search can backfill it later
+    // a provider failure leaves the embedding missing so the background worker can retry it later
     let transaction_embedding = match TransactionEmbedding::generate(
         state,
         &semantic_fields.kind,
         semantic_fields.category.as_deref(),
         semantic_fields.description.as_deref(),
+        search_revision,
     )
     .await
     {
@@ -446,7 +583,7 @@ async fn refresh_transaction_embedding(
                 user_id = %user_id,
                 status = %status,
                 error = %error,
-                "transaction updated without an embedding; semantic search will retry it"
+                "transaction updated without an embedding; the background worker will retry it"
             );
             return;
         }
@@ -475,12 +612,43 @@ async fn refresh_transaction_embedding(
                 user_id = %user_id,
                 status = %status,
                 error = %error,
-                "transaction updated without a stored embedding; semantic search will retry it"
+                "transaction updated without a stored embedding; the background worker will retry it"
             );
         }
     }
 }
 
+
+// Report saved indexing progress without generating embeddings or changing transaction data.
+pub(crate) async fn get_indexing_status(
+    auth: AuthenticatedUser,
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::Json<IndexingStatus>, (StatusCode, String)> {
+    // One database snapshot keeps all three counts consistent while the worker saves new embeddings.
+    // Match both owner and revision, just as the worker does when finding unfinished transactions.
+    let status = sqlx::query_as::<_, IndexingStatus>(
+        "SELECT COUNT(*) AS total,
+                COUNT(e.transaction_id) AS indexed,
+                COUNT(*) - COUNT(e.transaction_id) AS remaining
+         FROM transactions t
+         LEFT JOIN transaction_embeddings e
+           ON e.transaction_id = t.id
+          AND e.user_id = t.user_id
+          AND e.search_revision = t.search_revision
+         WHERE t.user_id = $1 AND t.status <> 'removed'",
+    )
+    .bind(auth.user_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not load indexing status".to_string(),
+        )
+    })?;
+
+    Ok(axum::Json(status))
+}
 
 // route for getting transactions for authenticated user
 pub(crate) async fn get_transactions(
@@ -489,8 +657,9 @@ pub(crate) async fn get_transactions(
 ) -> Result<axum::Json<Vec<Transaction>>, (axum::http::StatusCode, String)> {
 
     // fetch all the user's transactions from the database
+    // keep removed transactions stored for history, but exclude them from this list
     let transactions = sqlx::query!(
-        "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1",
+        "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1 AND status <> 'removed'",
         auth.user_id
     )
     .fetch_all(&state.pool)
@@ -511,6 +680,7 @@ pub(crate) async fn get_transactions(
             kind: match transaction.kind.as_str() {
                 "income" => TransactionKind::Income,
                 "expense" => TransactionKind::Expense,
+                "transfer" => TransactionKind::Transfer,
                 _ => panic!("Invalid transaction kind in database"),
             },
             category: transaction.category,
@@ -634,15 +804,17 @@ pub(crate) async fn get_budget_progress(
 
     // join budgets with transactions to compute "spent" per category (expenses only)
     // we left join transactions to  include categories with a budget but no expenses (spent = 0)
+    // keep the status filter in the join so categories with only removed expenses still appear
     let rows = sqlx::query!(
         "SELECT
             b.category as \"category!\",
             b.amount as \"budget_amount!\",
-            COALESCE(SUM(t.amount), 0)::numeric as \"spent!\"
+            GREATEST(COALESCE(SUM(-t.amount), 0), 0)::numeric as \"spent!\"
         FROM budgets b
         LEFT JOIN transactions t
         ON t.user_id = b.user_id
         AND t.kind = 'expense'
+        AND t.status <> 'removed'
         AND t.category = b.category
         AND t.date >= $2
         AND t.date < $3
@@ -700,53 +872,7 @@ pub(crate) async fn semantic_transaction_search(
         ));
     }
 
-    // we take this as an opportunity to perform a backfill of the users transactions who have no entry
-    // in the transaction_embeddings table yet, so we generate and insert embeddings for any such
-    // transactions
-    let missing_rows = sqlx::query(
-        "SELECT t.id, t.user_id, t.kind, t.category, t.description
-         FROM transactions t
-         WHERE t.user_id = $1
-         AND NOT EXISTS (
-            SELECT 1
-            FROM transaction_embeddings e
-            WHERE e.transaction_id = t.id
-         )
-         LIMIT 5"
-    )
-    .bind(auth.user_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // now we generate and insert embeddings for these transactions
-    for row in missing_rows {
-        let transaction_id: uuid::Uuid = row.get("id");
-        let user_id: uuid::Uuid = row.get("user_id");
-        let kind_str: String = row.get("kind");
-        let category: Option<String> = row.get("category");
-        let description: Option<String> = row.get("description");
-
-        let transaction_embedding = TransactionEmbedding::generate(
-            &state,
-            &kind_str,
-            category.as_deref(),
-            description.as_deref(),
-        )
-        .await;
-
-        // if a backfill row fails, we don't want the whole search to fail
-        if let Ok(transaction_embedding) = transaction_embedding {
-            let _ = store_transaction_embedding_if_current(
-                &state,
-                transaction_id,
-                user_id,
-                transaction_embedding,
-            )
-            .await;
-        }
-    }
-
+    // Transaction indexing runs in the worker so backlog and retries cannot delay this request.
     // convert the search query into an embedding
     let search_embedding = generate_transaction_embedding(&state, query).await?;
 
@@ -769,12 +895,17 @@ pub(crate) async fn semantic_transaction_search(
     
     // we additionally filter results by a maximum cosine distance threshold to avoid returning completely irrelevant results,
     // and we limit the number of results returned based on user input (defaulting to 10, max 50)
+    // check the transaction owner too so an incorrect embedding user ID cannot expose another user's data
+    // exclude removed transactions before ordering and limiting the search results
     let rows = sqlx::query(
         "SELECT t.id, t.user_id, t.amount, t.kind, t.category, t.date, t.description,
                     1.0 - (embed.embedding <=> $2) as similarity_score
         FROM transaction_embeddings embed
-        JOIN transactions t ON t.id = embed.transaction_id
-        WHERE embed.user_id = $1 AND embed.embedding <=> $2 < $3
+        JOIN transactions t
+          ON t.id = embed.transaction_id
+         AND t.search_revision = embed.search_revision
+        WHERE embed.user_id = $1 AND t.user_id = $1 AND embed.embedding <=> $2 < $3
+        AND t.status <> 'removed'
         ORDER BY embed.embedding <=> $2
         LIMIT $4"
     )
@@ -796,6 +927,7 @@ pub(crate) async fn semantic_transaction_search(
             let kind = match kind_str.as_str() {
                 "income" => TransactionKind::Income,
                 "expense" => TransactionKind::Expense,
+                "transfer" => TransactionKind::Transfer,
                 _ => TransactionKind::Expense,
             };
 

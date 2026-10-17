@@ -43,11 +43,11 @@ export default function AnalyticsSection({
               <h3>Cumulative net</h3>
               <div className="analyticsStats">
                 <span className="analyticsStat income">
-                  <span>Income</span>
+                  <span>Money in</span>
                   <strong>{money(monthIncomeExpense.income)}</strong>
                 </span>
                 <span className="analyticsStat expense">
-                  <span>Expense</span>
+                  <span>Money out</span>
                   <strong>{money(monthIncomeExpense.expense)}</strong>
                 </span>
                 <span className="analyticsStat net">
@@ -68,8 +68,8 @@ export default function AnalyticsSection({
 
             {spendingCategoryChart.length === 0 ? (
               <div className="emptyState compact">
-                <strong>No expenses for this month.</strong>
-                <span>Income activity is still reflected in cumulative net.</span>
+                <strong>No net spending for this month.</strong>
+                <span>Money entering the account is still reflected in cumulative net.</span>
               </div>
             ) : (
               <div className="chartFrame">

@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use pgvector::Vector;
 
+const EMBEDDING_MODEL: &str = "text-embedding-3-small";
+
 pub(crate) fn transaction_embedding_text(
     transaction_type: &str,
     category: Option<&str>,
@@ -36,6 +38,7 @@ impl AddTransactionRequest {
         // get the transaction type, category, and description (with defaults if not provided) and format them into a string for embedding
         let transaction_type = match self.kind {
             TransactionKind::Expense => "Expense",
+            TransactionKind::Transfer => "Transfer",
             TransactionKind::Income => "Income",
         };
         
@@ -83,7 +86,7 @@ async fn generate_openai_embedding(
     // body fields input, model, and encoding_format
     let embedding_request = EmbeddingRequest {
         input: embedding_text,
-        model: "text-embedding-3-small",
+        model: EMBEDDING_MODEL,
         encoding_format: "float"
     };
 
@@ -133,6 +136,8 @@ pub struct TransactionEmbedding {
     description: Option<String>,
     embedding_text: String,
     embedding: Vec<f32>,
+    search_revision: i32,
+    embedding_model: &'static str,
 }
 
 impl TransactionEmbedding {
@@ -142,10 +147,12 @@ impl TransactionEmbedding {
         transaction_type: &str,
         category: Option<&str>,
         description: Option<&str>,
+        search_revision: i32,
     ) -> Result<Self, (StatusCode, String)> {
         let embedding_transaction_type = match transaction_type {
             "income" => "Income",
             "expense" => "Expense",
+            "transfer" => "Transfer",
             _ => "Expense",
         };
         let embedding_text = transaction_embedding_text(
@@ -159,6 +166,7 @@ impl TransactionEmbedding {
             category,
             description,
             embedding_text,
+            search_revision,
         )
         .await
     }
@@ -166,10 +174,12 @@ impl TransactionEmbedding {
     pub(crate) async fn generate_from_request(
         state: &AppState,
         req: &AddTransactionRequest,
+        search_revision: i32,
     ) -> Result<Self, (StatusCode, String)> {
         let transaction_type = match req.kind {
             TransactionKind::Income => "income",
             TransactionKind::Expense => "expense",
+            TransactionKind::Transfer => "transfer",
         };
         let embedding_text = req.transaction_string_embedding();
 
@@ -179,6 +189,7 @@ impl TransactionEmbedding {
             req.category.as_deref(),
             req.description.as_deref(),
             embedding_text,
+            search_revision,
         )
         .await
     }
@@ -189,6 +200,7 @@ impl TransactionEmbedding {
         category: Option<&str>,
         description: Option<&str>,
         embedding_text: String,
+        search_revision: i32,
     ) -> Result<Self, (StatusCode, String)> {
         let embedding = generate_transaction_embedding(state, &embedding_text).await?;
 
@@ -198,6 +210,8 @@ impl TransactionEmbedding {
             description: description.map(str::to_string),
             embedding_text,
             embedding,
+            search_revision,
+            embedding_model: EMBEDDING_MODEL,
         })
     }
 }
@@ -209,15 +223,21 @@ pub async fn store_transaction_embedding(
     user_id: uuid::Uuid,
     embedding_text: &str,
     embedding: Vec<f32>,
+    search_revision: i32,
+    embedding_model: &str,
 ) -> Result<(), (StatusCode, String)> {
     // we use the pgvector extension to store the embedding vector in the database
     sqlx::query(
-        "INSERT INTO transaction_embeddings (transaction_id, user_id, embedding_text, embedding) VALUES ($1, $2, $3, $4)"
+        "INSERT INTO transaction_embeddings
+            (transaction_id, user_id, embedding_text, embedding, search_revision, embedding_model)
+         VALUES ($1, $2, $3, $4, $5, $6)"
     )
     .bind(transaction_id)
     .bind(user_id)
     .bind(embedding_text)
     .bind(Vector::from(embedding)) // insert as a pgvector type
+    .bind(search_revision)
+    .bind(embedding_model)
     .execute(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -238,6 +258,8 @@ pub async fn store_transaction_embedding_if_current(
         description,
         embedding_text,
         embedding,
+        search_revision,
+        embedding_model,
     } = transaction_embedding;
 
     let result = sqlx::query(
@@ -246,23 +268,29 @@ pub async fn store_transaction_embedding_if_current(
             FROM transactions
             WHERE id = $1
               AND user_id = $2
-              AND kind = $5
-              AND category IS NOT DISTINCT FROM $6
-              AND description IS NOT DISTINCT FROM $7
+              AND search_revision = $5
+              AND kind = $7
+              AND category IS NOT DISTINCT FROM $8
+              AND description IS NOT DISTINCT FROM $9
             FOR UPDATE
         )
-        INSERT INTO transaction_embeddings (transaction_id, user_id, embedding_text, embedding)
-        SELECT $1, $2, $3, $4
+        INSERT INTO transaction_embeddings
+            (transaction_id, user_id, embedding_text, embedding, search_revision, embedding_model)
+        SELECT $1, $2, $3, $4, $5, $6
         FROM current_transaction
         ON CONFLICT (transaction_id) DO UPDATE SET
             user_id = EXCLUDED.user_id,
             embedding_text = EXCLUDED.embedding_text,
-            embedding = EXCLUDED.embedding"
+            embedding = EXCLUDED.embedding,
+            search_revision = EXCLUDED.search_revision,
+            embedding_model = EXCLUDED.embedding_model"
     )
     .bind(transaction_id)
     .bind(user_id)
     .bind(&embedding_text)
     .bind(Vector::from(embedding))
+    .bind(search_revision)
+    .bind(embedding_model)
     .bind(&transaction_type)
     .bind(category.as_deref())
     .bind(description.as_deref())
@@ -285,7 +313,7 @@ mod tests {
     #[test]
     fn test_transaction_string_embedding() {
         let req = AddTransactionRequest {
-            amount: Decimal::new(1234, 2), // $12.34
+            amount: Decimal::new(-1234, 2), // -$12.34
             date: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
             category: Some("Food".to_string()),
             description: Some("Lunch at cafe".to_string()),

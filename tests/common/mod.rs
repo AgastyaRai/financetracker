@@ -155,6 +155,8 @@ pub async fn setup_app_state() -> AppState {
         openai_api_key: openai_api_key.clone(),
         http_client,
         embedding_provider: Arc::new(DeterministicEmbeddingProvider),
+        plaid_provider: None,
+        bank_credential_cipher: None,
     }
 }
 
@@ -180,6 +182,8 @@ pub async fn setup_live_app_state() -> AppState {
         openai_api_key: openai_api_key.clone(),
         http_client,
         embedding_provider: Arc::new(OpenAIEmbeddingProvider),
+        plaid_provider: None,
+        bank_credential_cipher: None,
     }
 }
 
@@ -205,5 +209,7 @@ pub async fn setup_app_state_with_embedding_provider(
         openai_api_key: "fake-provider-does-not-use-an-api-key".to_string(),
         http_client,
         embedding_provider,
+        plaid_provider: None,
+        bank_credential_cipher: None,
     }
 }
