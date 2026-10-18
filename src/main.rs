@@ -52,7 +52,7 @@ async fn main() {
     // select the Plaid environment and corresponding secret
     let (plaid_base_url, plaid_secret_var) = match std::env::var("PLAID_ENV").as_deref() {
         Ok("production") => ("https://production.plaid.com", "PLAID_PRODUCTION_SECRET"),
-        Ok("sandbox") | Err(_) => (plaid_base_url, "PLAID_SANDBOX_SECRET"),
+        Ok("sandbox") | Err(_) => (SANDBOX_BASE_URL, "PLAID_SANDBOX_SECRET"),
         _ => panic!("PLAID_ENV must be sandbox or production"),
     };
 
