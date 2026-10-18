@@ -466,6 +466,24 @@ pub(crate) async fn revert_transaction(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // lock the owned bank connection before the transaction, matching the import's lock order.
+    let connection_id = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT c.connection_id
+         FROM bank_connections c
+         JOIN imported_transaction_details d ON d.connection_id = c.connection_id
+         JOIN transactions t ON t.id = d.transaction_id
+         WHERE t.id = $1 AND t.user_id = $2 AND c.user_id = $2
+         FOR SHARE OF c"
+    )
+    .bind(transaction_id)
+    .bind(auth.user_id)
+    .fetch_optional(&mut *database_transaction)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(connection_id) = connection_id else {
+        return Err((StatusCode::NOT_FOUND, "Imported transaction not found".to_string()));
+    };
+
     // Serialize restores with edits, while checking the transaction owner's identity.
     let existing_fields = sqlx::query_as::<_, TransactionSemanticFields>(
         "SELECT kind, category, description FROM transactions
@@ -486,11 +504,12 @@ pub(crate) async fn revert_transaction(
         "SELECT d.inferred_kind AS kind, d.inferred_category AS category, d.inferred_description AS description
          FROM imported_transaction_details d
          JOIN bank_connections c ON c.connection_id = d.connection_id
-         WHERE d.transaction_id = $1 AND c.user_id = $2
+         WHERE d.transaction_id = $1 AND c.user_id = $2 AND d.connection_id = $3
          FOR SHARE OF d, c"
     )
     .bind(transaction_id)
     .bind(auth.user_id)
+    .bind(connection_id)
     .fetch_optional(&mut *database_transaction)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
