@@ -49,10 +49,17 @@ async fn main() {
     // set up a reusable HTTP client for outbound API calls (like to OpenAI)
     let http_client = reqwest::Client::new();
 
+    // select the Plaid environment and corresponding secret
+    let (plaid_base_url, plaid_secret_var) = match std::env::var("PLAID_ENV").as_deref() {
+        Ok("production") => ("https://production.plaid.com", "PLAID_PRODUCTION_SECRET"),
+        Ok("sandbox") | Err(_) => (plaid_base_url, "PLAID_SANDBOX_SECRET"),
+        _ => panic!("PLAID_ENV must be sandbox or production"),
+    };
+
     // enable Sandbox linking only when credentials and country settings are supplied
     let plaid_provider: Option<Arc<dyn PlaidProvider>> = match (
         std::env::var("PLAID_CLIENT_ID"),
-        std::env::var("PLAID_SANDBOX_SECRET"),
+        std::env::var(plaid_secret_var),
         std::env::var("PLAID_COUNTRY_CODES"),
     ) {
         (Ok(client_id), Ok(secret), Ok(country_codes)) => {
@@ -71,7 +78,7 @@ async fn main() {
                     .expect("Could not create the Plaid HTTP client");
                 Some(Arc::new(PlaidClient::new(
                     plaid_http_client,
-                    SANDBOX_BASE_URL,
+                    plaid_base_url,
                     client_id,
                     secret,
                     country_codes,
