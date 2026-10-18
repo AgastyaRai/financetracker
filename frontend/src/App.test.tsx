@@ -1380,10 +1380,13 @@ describe("transaction editing", () => {
 
 describe("imported transaction revert", () => {
   const edited = {
-    id: "imported-coffee", amount: "75.50", kind: "Income" as const,
+    id: "imported-coffee", row_version: 1, amount: "75.50", kind: "Income" as const,
     category: "Edited", date: monthValue() + "-12", description: "Edited import", can_revert: true,
   };
-  const original = { kind: "Expense" as const, category: "Transportation", description: "Original commute" };
+  const original = {
+    ...edited, row_version: 2, kind: "Expense" as const, category: "Transportation",
+    description: "Original commute", can_revert: false,
+  };
   const restored = { ...edited, ...original, can_revert: false };
 
   beforeEach(() => {
@@ -1548,7 +1551,7 @@ describe("indexing progress integration", () => {
       date: monthValue() + "-12", description: "Imported grocery", can_revert: true,
     };
     apiMocks.getTransactions.mockResolvedValue([transaction]);
-    apiMocks.revertTransaction.mockResolvedValue({ kind: "Expense", category: "Food", description: "Original grocery" });
+    apiMocks.revertTransaction.mockResolvedValue({ ...transaction, row_version: 2, description: "Original grocery", can_revert: false });
     apiMocks.getIndexingStatus.mockResolvedValue({ total: 331, indexed: 331, remaining: 0 });
     render(<App />);
     await screen.findByText(ready);

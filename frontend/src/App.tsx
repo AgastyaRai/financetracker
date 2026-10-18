@@ -621,17 +621,15 @@ export default function App() {
     const transactionId = transaction.id;
     const isRevert = !input;
     const isCurrentSession = captureSession();
-    let savedInput: TransactionInput;
+    let revertedTransaction: Transaction | undefined;
     setSubmittingEdit(true);
     setRevertingTransactionId(isRevert ? transactionId : null);
     setTransactionsStatus(null);
     try {
       if (input) {
         await updateTransaction(transactionId, { ...input, expected_version: transaction.row_version });
-        savedInput = input;
       } else {
-        const originalFields = await revertTransaction(transactionId);
-        savedInput = { amount: transaction.amount, date: transaction.date, ...originalFields };
+        revertedTransaction = await revertTransaction(transactionId);
       }
       if (!isCurrentSession()) return;
     } catch (e: unknown) {
@@ -652,10 +650,10 @@ export default function App() {
     requestVersions.current.search++;
     setTransactions((current) => {
       // a successful edit advances its expected version once, even if the following refresh fails.
-      const updated = {
+      const updated = revertedTransaction ?? {
         ...transaction,
-        ...savedInput,
-        ...(isRevert ? { can_revert: false } : { row_version: transaction.row_version + 1 }),
+        ...input,
+        row_version: transaction.row_version + 1,
       };
       const next = current.some((transaction) => transaction.id === transactionId)
         ? current.map((transaction) => transaction.id === transactionId ? { ...transaction, ...updated } : transaction)

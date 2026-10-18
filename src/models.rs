@@ -112,13 +112,6 @@ pub(crate) struct IndexingStatus {
     pub remaining: i64,
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct RevertedTransactionFields {
-    pub kind: TransactionKind,
-    pub category: Option<String>,
-    pub description: Option<String>,
-}
-
 // struct for adding/updating a budget (request body - no user_id)
 #[derive(serde::Deserialize)]
 pub(crate) struct UpsertBudgetRequest {

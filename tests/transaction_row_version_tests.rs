@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::sync::Notify;
+use tokio::time::timeout;
 use tower::util::ServiceExt;
 use uuid::Uuid;
 
@@ -50,6 +53,28 @@ impl EmbeddingProvider for RecordingEmbeddingProvider {
         _embedding_text: &str,
     ) -> Result<Vec<f32>, (StatusCode, String)> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut embedding = vec![0.0; 1536];
+        embedding[0] = 1.0;
+        Ok(embedding)
+    }
+}
+
+// hold only revert's post-commit provider call while another backend imports a correction.
+struct HeldRevertProvider {
+    started: Notify,
+    release: Notify,
+}
+
+#[async_trait]
+impl EmbeddingProvider for HeldRevertProvider {
+    async fn generate_embedding(
+        &self,
+        _http_client: &reqwest::Client,
+        _openai_api_key: &str,
+        _embedding_text: &str,
+    ) -> Result<Vec<f32>, (StatusCode, String)> {
+        self.started.notify_one();
+        self.release.notified().await;
         let mut embedding = vec![0.0; 1536];
         embedding[0] = 1.0;
         Ok(embedding)
@@ -509,5 +534,195 @@ mod transaction_row_version_tests {
         assert_eq!(stale.status(), StatusCode::CONFLICT);
         assert_eq!(fixture.saved_state().await, after_revert);
         assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls);
+    }
+
+    // test that revert supplies the saved snapshot needed for a second edit when the list cannot refresh
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_revert_snapshot_allows_a_second_edit_without_a_refresh(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let edit_response = fixture.edit(
+            &fixture.state,
+            edit_input(&fixture.original_transaction, "User note", 1),
+        )
+        .await;
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let mut displayed_transaction = fixture.original_transaction.clone();
+        displayed_transaction["description"] = json!("User note");
+        displayed_transaction["row_version"] = json!(2);
+
+        // retain the displayed row and apply only the revert response, with no successful list read.
+        let revert_response = request(
+            &fixture.state,
+            &fixture.access_token,
+            "POST",
+            &format!("/api/transactions/{}/revert", fixture.transaction_id),
+            None,
+        )
+        .await;
+        assert_eq!(revert_response.status(), StatusCode::OK);
+        let reverted_transaction = response_json(revert_response).await;
+        displayed_transaction
+            .as_object_mut()
+            .unwrap()
+            .extend(reverted_transaction.as_object().unwrap().clone());
+        let second_edit = fixture.edit(
+            &fixture.state,
+            edit_input(&displayed_transaction, "Note after Revert", displayed_transaction["row_version"].as_i64().unwrap()),
+        )
+        .await;
+        assert_eq!(second_edit.status(), StatusCode::OK, "the revert response must permit a second edit without a refresh");
+        assert_eq!(reverted_transaction["id"], json!(fixture.transaction_id));
+        assert_eq!(reverted_transaction["row_version"], 3);
+        assert_eq!(reverted_transaction["amount"], "-10.00");
+        assert_eq!(reverted_transaction["date"], "2026-10-01");
+        assert_eq!(reverted_transaction["can_revert"], false);
+        let saved = fixture.saved_state().await;
+        assert_eq!(saved["transaction"]["row_version"], 4);
+        assert_eq!(saved["transaction"]["description"], "Note after Revert");
+        assert_eq!(saved["transaction"]["amount"], json!(-10.0));
+        assert_eq!(saved["transaction"]["date"], "2026-10-01");
+    }
+
+    // test that revert returns an earlier import's corrected financial fields with the version of its own write
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_revert_snapshot_includes_an_import_completed_before_its_write(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let edit_response = fixture.edit(
+            &fixture.state,
+            edit_input(&fixture.original_transaction, "User note", 1),
+        )
+        .await;
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let mut displayed_transaction = fixture.original_transaction.clone();
+        displayed_transaction["description"] = json!("User note");
+        displayed_transaction["row_version"] = json!(2);
+
+        // another backend imports money and date corrections without refreshing the caller's old row.
+        let mut importer = fixture.second_backend().await;
+        importer.plaid_provider = Some(bank_provider(
+            Some(INITIAL_CURSOR.to_string()),
+            TransactionPage {
+                added: vec![],
+                modified: vec![provider_transaction(12.0, "2026-10-02")],
+                removed: vec![],
+                next_cursor: "revert-before".to_string(),
+                has_more: false,
+            },
+        ));
+        fixture.import(&importer).await;
+        let revert_response = request(
+            &fixture.state,
+            &fixture.access_token,
+            "POST",
+            &format!("/api/transactions/{}/revert", fixture.transaction_id),
+            None,
+        )
+        .await;
+        assert_eq!(revert_response.status(), StatusCode::OK);
+        let reverted_transaction = response_json(revert_response).await;
+        displayed_transaction
+            .as_object_mut()
+            .unwrap()
+            .extend(reverted_transaction.as_object().unwrap().clone());
+        let second_edit = fixture.edit(
+            &fixture.state,
+            edit_input(&displayed_transaction, "Reviewed imported correction", displayed_transaction["row_version"].as_i64().unwrap()),
+        )
+        .await;
+        assert_eq!(second_edit.status(), StatusCode::OK, "revert must return the corrected money, date, and saved version together");
+        assert_eq!(reverted_transaction["row_version"], 4);
+        assert_eq!(reverted_transaction["amount"], "-12.00");
+        assert_eq!(reverted_transaction["date"], "2026-10-02");
+        let saved = fixture.saved_state().await;
+        assert_eq!(saved["transaction"]["amount"], json!(-12.0));
+        assert_eq!(saved["transaction"]["date"], "2026-10-02");
+        assert_eq!(saved["transaction"]["row_version"], 5);
+        assert_eq!(saved["connection"]["progress_cursor"], "revert-before");
+    }
+
+    // test that a later import cannot relabel revert's older financial snapshot as current
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_revert_snapshot_stays_consistent_when_an_import_finishes_before_its_response(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let edit_response = fixture.edit(
+            &fixture.state,
+            edit_input(&fixture.original_transaction, "User note", 1),
+        )
+        .await;
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let provider = Arc::new(HeldRevertProvider {
+            started: Notify::new(),
+            release: Notify::new(),
+        });
+        let mut revert_state = fixture.state.clone();
+        revert_state.embedding_provider = provider.clone();
+        let access_token = fixture.access_token.clone();
+        let transaction_id = fixture.transaction_id;
+        let revert_request = tokio::spawn(async move {
+            timeout(
+                Duration::from_secs(15),
+                request(
+                    &revert_state,
+                    &access_token,
+                    "POST",
+                    &format!("/api/transactions/{transaction_id}/revert"),
+                    None,
+                ),
+            )
+            .await
+        });
+        let provider_started = timeout(
+            Duration::from_secs(5), provider.started.notified(),
+        )
+        .await;
+
+        // import after revert commits but before its held embedding call can return the HTTP response.
+        let mut importer = fixture.second_backend().await;
+        importer.plaid_provider = Some(bank_provider(
+            Some(INITIAL_CURSOR.to_string()),
+            TransactionPage {
+                added: vec![],
+                modified: vec![provider_transaction(12.0, "2026-10-02")],
+                removed: vec![],
+                next_cursor: "revert-after".to_string(),
+                has_more: false,
+            },
+        ));
+        let import_response = timeout(
+            Duration::from_secs(5),
+            request(
+                &importer,
+                &fixture.access_token,
+                "POST",
+                &format!("/api/bank-connections/{}/import", fixture.connection_id),
+                None,
+            ),
+        )
+        .await;
+
+        // release and finish the bounded revert before asserting observations from either request.
+        provider.release.notify_one();
+        let revert_response = revert_request.await.unwrap();
+        provider_started.expect("revert must reach its provider after committing");
+        let import_response = import_response.expect("import must finish while revert's provider is pending");
+        assert_eq!(import_response.status(), StatusCode::OK);
+        let revert_response = revert_response.expect("revert must finish after its provider is released");
+        assert_eq!(revert_response.status(), StatusCode::OK);
+        let reverted_transaction = response_json(revert_response).await;
+        assert_eq!(reverted_transaction["row_version"], 3, "the response belongs to revert's write, before the later import");
+        assert_eq!(reverted_transaction["amount"], "-10.00");
+        assert_eq!(reverted_transaction["date"], "2026-10-01");
+        assert_eq!(reverted_transaction["description"], "Imported coffee");
+        let before = fixture.saved_state().await;
+        assert_eq!(before["transaction"]["row_version"], 4);
+        assert_eq!(before["transaction"]["amount"], json!(-12.0));
+        assert_eq!(before["transaction"]["date"], "2026-10-02");
+        let stale_edit = fixture.edit(
+            &fixture.state,
+            edit_input(&reverted_transaction, "Unsaved note", 3),
+        )
+        .await;
+        assert_eq!(stale_edit.status(), StatusCode::CONFLICT);
+        assert_eq!(fixture.saved_state().await, before);
     }
 }

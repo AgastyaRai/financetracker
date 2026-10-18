@@ -114,8 +114,11 @@ describe("transaction updates", () => {
 describe("imported transaction revert request", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("posts only the transaction id and receives the original fields", async () => {
-    const original = { kind: "Expense", category: null, description: "Original" };
+  it("posts only the transaction id and receives the saved transaction", async () => {
+    const original = {
+      id: "imported/id", row_version: 2, amount: "-10.00", date: "2026-10-12",
+      kind: "Expense", category: null, description: "Original", can_revert: false,
+    };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(original), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     localStorage.setItem("access_token", "revert-token");

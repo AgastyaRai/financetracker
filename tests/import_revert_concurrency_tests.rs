@@ -252,6 +252,13 @@ mod import_revert_concurrency_tests {
         let import_result: Value = serde_json::from_slice(&import_body_bytes).unwrap();
         assert_eq!(import_result, json!({ "imported": 0 }));
 
+        // revert must return the imported correction and the version saved under the same lock.
+        let reverted_transaction: Value = serde_json::from_slice(&revert_body_bytes).unwrap();
+        assert_eq!(reverted_transaction["row_version"], 3);
+        assert_eq!(reverted_transaction["amount"], "-12.00");
+        assert_eq!(reverted_transaction["date"], "2026-10-02");
+        assert_eq!(reverted_transaction["can_revert"], false);
+
         // both writes must survive: import saves the correction and cursor, then revert releases overrides.
         let saved: Value = sqlx::query_scalar(
             "SELECT jsonb_build_object(

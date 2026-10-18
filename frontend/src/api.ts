@@ -104,7 +104,7 @@ export async function updateTransaction(id: string, tx: UpdateTransactionInput):
 }
 
 export async function revertTransaction(id: string) {
-  return await request<Pick<Transaction, "kind" | "category" | "description">>(`/transactions/${encodeURIComponent(id)}/revert`, {
+  return await request<Transaction>(`/transactions/${encodeURIComponent(id)}/revert`, {
     method: "POST",
   });
 }

@@ -249,6 +249,15 @@ struct TransactionEditState {
     status: String,
 }
 
+// capture money, date, and version from revert's write before a later import can change them.
+#[derive(sqlx::FromRow)]
+struct RevertedTransactionState {
+    amount: sqlx::types::Decimal,
+    date: chrono::NaiveDate,
+    row_version: i64,
+    search_revision: i32,
+}
+
 // borrowed semantic fields from a transaction request
 // are copied into the same owned structure used for database results
 impl TransactionSemanticFields {
@@ -461,7 +470,7 @@ pub(crate) async fn revert_transaction(
     auth: AuthenticatedUser,
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(transaction_id): axum::extract::Path<uuid::Uuid>,
-) -> Result<axum::Json<RevertedTransactionFields>, (StatusCode, String)> {
+) -> Result<axum::Json<Transaction>, (StatusCode, String)> {
     let mut database_transaction = state.pool.begin()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -526,12 +535,12 @@ pub(crate) async fn revert_transaction(
 
     // Only the three editable import classifications are restored; money and date stay current.
     // Release overrides even when the user has already typed the original values back in.
-    let search_revision = sqlx::query_scalar::<_, i32>(
+    let reverted_transaction = sqlx::query_as::<_, RevertedTransactionState>(
         "UPDATE transactions SET kind = $1, category = $2, description = $3,
          kind_overridden = FALSE, category_overridden = FALSE, description_overridden = FALSE,
          row_version = row_version + 1,
          search_revision = search_revision + CASE WHEN $6 THEN 1 ELSE 0 END
-         WHERE id = $4 AND user_id = $5 RETURNING search_revision"
+         WHERE id = $4 AND user_id = $5 RETURNING amount, date, row_version, search_revision"
     )
     .bind(&original_fields.kind)
     .bind(original_fields.category.as_deref())
@@ -557,13 +566,19 @@ pub(crate) async fn revert_transaction(
 
     // Provider failure cannot undo a restore; guarded storage also rejects delayed results after a newer edit.
     if semantic_fields_changed {
-        refresh_transaction_embedding(&state, transaction_id, auth.user_id, &original_fields, search_revision).await;
+        refresh_transaction_embedding(&state, transaction_id, auth.user_id, &original_fields, reverted_transaction.search_revision).await;
     }
 
-    Ok(axum::Json(RevertedTransactionFields {
+    Ok(axum::Json(Transaction {
+        id: transaction_id,
+        user_id: auth.user_id,
+        amount: reverted_transaction.amount,
+        date: reverted_transaction.date,
+        row_version: reverted_transaction.row_version,
         kind,
         category: original_fields.category,
         description: original_fields.description,
+        can_revert: false,
     }))
 }
 

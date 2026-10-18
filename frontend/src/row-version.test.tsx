@@ -666,3 +666,143 @@ describe("reload recovery while an obsolete read is still pending", () => {
     expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
   });
 });
+
+// use the saved revert response even when the following transaction read fails once.
+function mockRevertWithFailedRefresh(failure: "http-error" | "network-error" = "http-error") {
+  const initialFetch = vi.mocked(fetch).getMockImplementation()!;
+  let reverted = false;
+  let refreshFailed = false;
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url === "/api/transactions/row-version-coffee/revert" && init?.method === "POST") {
+      savedTransaction = {
+        ...savedTransaction,
+        kind: "Expense",
+        category: "Food",
+        description: "Imported coffee",
+        can_revert: false,
+        row_version: savedTransaction.row_version + 1,
+      };
+      reverted = true;
+      return jsonResponse(savedTransaction);
+    }
+    if (url === "/api/transactions" && init?.method === "GET" && reverted && !refreshFailed) {
+      refreshFailed = true;
+      if (failure === "network-error") throw new TypeError("Refresh unavailable");
+      return jsonResponse({ error: "Refresh unavailable" }, 500);
+    }
+    return initialFetch(input, init);
+  });
+}
+
+describe("reverted transaction versions", () => {
+  beforeEach(() => {
+    savedTransaction = {
+      ...savedTransaction,
+      kind: "Income",
+      category: "Edited",
+      description: "Edited coffee",
+      can_revert: true,
+    };
+  });
+
+  it.each(["http-error", "network-error"] as const)("saves a second edit from the reverted row after a failed refresh (%s)", async (failure) => {
+    const user = userEvent.setup();
+    mockRevertWithFailedRefresh(failure);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Revert imported fields: Edited coffee/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Transaction was reverted, but the dashboard could not refresh: Refresh unavailable");
+    expect(savedTransaction.row_version).toBe(2);
+    expect(screen.queryByRole("button", { name: /Revert imported fields:/ })).not.toBeInTheDocument();
+
+    const editor = await openEditor(user);
+    expect(editor.getByLabelText("Kind")).toHaveValue("Expense");
+    await user.clear(editor.getByLabelText("Description (optional)"));
+    await user.type(editor.getByLabelText("Description (optional)"), "Note after Revert");
+    await user.click(editor.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
+    expect(updateBodies).toHaveLength(1);
+    expect(updateBodies[0].expected_version).toBe(2);
+    expect(savedTransaction.row_version).toBe(3);
+    expect(savedTransaction.amount).toBe("-10.00");
+    expect(savedTransaction.date).toBe(monthValue() + "-01");
+    expect(savedTransaction.description).toBe("Note after Revert");
+  });
+
+  it("uses money, date, and version returned by Revert after an earlier import", async () => {
+    const user = userEvent.setup();
+    mockRevertWithFailedRefresh();
+    render(<App />);
+    const revertButton = await screen.findByRole("button", { name: /Revert imported fields: Edited coffee/ });
+
+    // another backend corrects the stored row while this tab still displays its original financial fields.
+    savedTransaction = { ...savedTransaction, amount: "-12.00", date: monthValue() + "-02", row_version: 2 };
+    await user.click(revertButton);
+    expect(await screen.findByRole("alert")).toHaveTextContent("reverted, but the dashboard could not refresh");
+    const editor = await openEditor(user);
+    expect(editor.getByLabelText("Amount")).toHaveValue(-12);
+    expect(editor.getByLabelText("Date")).toHaveValue(monthValue() + "-02");
+    await user.clear(editor.getByLabelText("Description (optional)"));
+    await user.type(editor.getByLabelText("Description (optional)"), "Reviewed imported correction");
+    await user.click(editor.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
+    expect(updateBodies).toHaveLength(1);
+    expect(updateBodies[0]).toEqual(expect.objectContaining({ expected_version: 3, amount: "-12.00", date: monthValue() + "-02" }));
+    expect(savedTransaction.row_version).toBe(4);
+    expect(savedTransaction.amount).toBe("-12.00");
+  });
+
+  it("rejects a second edit when another import completes before the held Revert response", async () => {
+    const user = userEvent.setup();
+    mockRevertWithFailedRefresh();
+    const initialFetch = vi.mocked(fetch).getMockImplementation()!;
+    const revertReply = deferred<Response>();
+    let savedRevertResponse: Response | undefined;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const response = await initialFetch(input, init);
+      if (String(input) === "/api/transactions/row-version-coffee/revert") {
+        savedRevertResponse = response;
+        return revertReply.promise;
+      }
+      return response;
+    });
+    render(<App />);
+    try {
+      await user.click(await screen.findByRole("button", { name: /Revert imported fields: Edited coffee/ }));
+      await waitFor(() => expect(savedRevertResponse).toBeDefined());
+      expect(savedTransaction.row_version).toBe(2);
+
+      // the held response represents version 2; the later import must remain protected at version 3.
+      savedTransaction = { ...savedTransaction, amount: "-12.00", date: monthValue() + "-02", row_version: 3 };
+      await act(async () => { revertReply.resolve(savedRevertResponse!); });
+      expect(await screen.findByRole("alert")).toHaveTextContent("reverted, but the dashboard could not refresh");
+      const editor = await openEditor(user);
+      expect(editor.getByLabelText("Amount")).toHaveValue(-10);
+      await user.clear(editor.getByLabelText("Description (optional)"));
+      await user.type(editor.getByLabelText("Description (optional)"), "Unsaved note");
+      await user.click(editor.getByRole("button", { name: "Save changes" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Transaction changed while you were editing");
+      expect(updateBodies[0].expected_version).toBe(2);
+      expect(savedTransaction.row_version).toBe(3);
+      expect(savedTransaction.amount).toBe("-12.00");
+      expect(savedTransaction.date).toBe(monthValue() + "-02");
+      expect(editor.getByLabelText("Description (optional)")).toHaveValue("Unsaved note");
+      expect(editor.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "Reload latest" }));
+      const reloadedForm = screen.getByRole("form", { name: "Edit transaction" });
+      const reloadedEditor = within(reloadedForm.closest("tr") as HTMLElement);
+      await waitFor(() => expect(reloadedEditor.getByLabelText("Amount")).toHaveValue(-12));
+      expect(reloadedEditor.getByLabelText("Date")).toHaveValue(monthValue() + "-02");
+      await user.clear(reloadedEditor.getByLabelText("Description (optional)"));
+      await user.type(reloadedEditor.getByLabelText("Description (optional)"), "Reviewed later import");
+      await user.click(reloadedEditor.getByRole("button", { name: "Save changes" }));
+      expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
+      expect(updateBodies[1].expected_version).toBe(3);
+      expect(savedTransaction.row_version).toBe(4);
+      expect(savedTransaction.amount).toBe("-12.00");
+    } finally {
+      await act(async () => { revertReply.resolve(savedRevertResponse ?? jsonResponse({ error: "Test finished" }, 500)); });
+    }
+  });
+});

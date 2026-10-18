@@ -387,7 +387,11 @@ async fn revert_restores_imported_fields_and_preserves_money_date_and_source() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         json(response).await,
-        serde_json::json!({"kind": "Expense", "category": "Transportation", "description": "Original commute"})
+        serde_json::json!({
+            "id": id, "user_id": user_id, "row_version": 2,
+            "amount": "75.50", "date": "2026-03-12", "kind": "Expense",
+            "category": "Transportation", "description": "Original commute", "can_revert": false
+        })
     );
     let transactions = list(&app, &token).await;
     assert_eq!(
