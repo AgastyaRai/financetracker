@@ -1,6 +1,6 @@
 use sqlx::{ConnectOptions, PgPool, migrate::Migrator};
 use std::{borrow::Cow, process::Stdio, time::Duration};
-use tokio::process::Command;
+use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}, process::Command};
 
 const MIGRATIONS: Migrator = sqlx::migrate!("./backend/migrations");
 const TEST_JWT_SECRET: &str = "deployment_upgrade_test_only";
@@ -20,7 +20,7 @@ async fn legacy_schema(pool: &PgPool) {
     legacy_migrations.run(pool).await.unwrap();
 }
 
-fn backend(pool: &PgPool, run_migrations: bool, port: u16) -> Command {
+fn backend(pool: &PgPool, run_migrations: bool, port: u16, provider_proxy: &str, directory: &TestDirectory) -> Command {
     // SQLx 0.7 serializes Prefer as PREFERRED, which its URL parser does not accept; retain the same mode with its accepted spelling.
     let database_url = pool
         .connect_options()
@@ -37,10 +37,55 @@ fn backend(pool: &PgPool, run_migrations: bool, port: u16) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Scope provider isolation to this child, regardless of the developer's proxy or bypass settings.
+    isolate_provider_requests(&mut command, provider_proxy, directory);
     if run_migrations {
         command.env("RUN_MIGRATIONS", "1");
     }
     command
+}
+
+fn isolate_provider_requests(command: &mut Command, provider_proxy: &str, directory: &TestDirectory) {
+    // CGI mode disables environment proxies; the private empty dotenv file prevents it being restored.
+    command.env_remove("REQUEST_METHOD").current_dir(&directory.path);
+    for name in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+        command.env(name, provider_proxy);
+    }
+    for name in ["NO_PROXY", "no_proxy"] {
+        command.env(name, "");
+    }
+}
+
+// Keep the existing deadline behavior shared by startup and loopback subprocesses.
+async fn child_output_until(
+    command: &mut Command,
+    deadline: impl std::future::Future<Output = ()>,
+) -> std::io::Result<std::process::Output> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let result = tokio::select! {
+        output = async {
+            let (status, _, _) = tokio::try_join!(
+                child.wait(),
+                async {
+                    if let Some(pipe) = stdout_pipe.as_mut() { pipe.read_to_end(&mut stdout).await?; }
+                    Ok::<_, std::io::Error>(())
+                },
+                async {
+                    if let Some(pipe) = stderr_pipe.as_mut() { pipe.read_to_end(&mut stderr).await?; }
+                    Ok::<_, std::io::Error>(())
+                },
+            )?;
+            Ok(std::process::Output { status, stdout, stderr })
+        } => output,
+        _ = deadline => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "child deadline elapsed")),
+    };
+    // Retain the child across cancellation and await termination before its working directory can be removed.
+    child.kill().await?;
+    result
 }
 
 fn available_port() -> u16 {
@@ -51,18 +96,53 @@ fn available_port() -> u16 {
         .port()
 }
 
+// Observe the real worker without forwarding its CONNECT request or reading provider credentials.
+struct RejectingProviderProxy {
+    url: String,
+    requests: tokio::sync::mpsc::UnboundedReceiver<String>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RejectingProviderProxy {
+    async fn start() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, requests) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = String::new();
+                let read = tokio::time::timeout(Duration::from_secs(1), async {
+                    BufReader::new((&mut socket).take(8192)).read_line(&mut request).await
+                }).await;
+                if matches!(read, Ok(Ok(_))) {
+                    let _ = socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                    let _ = sender.send(request.trim_end().to_string());
+                }
+            }
+        });
+        Self { url, requests, task }
+    }
+}
+
+impl Drop for RejectingProviderProxy {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[sqlx::test(migrations = false)]
 async fn startup_rejects_missing_import_schema_before_serving_requests(pool: PgPool) {
     legacy_schema(&pool).await;
-    let output = tokio::time::timeout(
-        Duration::from_secs(5),
-        backend(&pool, false, available_port()).output(),
-    )
-    .await
-    .expect("an unmigrated backend must exit instead of serving broken transaction routes")
-    .unwrap();
+    let directory = TestDirectory::new();
+    let mut provider_proxy = RejectingProviderProxy::start().await;
+    let output = child_output_until(
+        &mut backend(&pool, false, available_port(), &provider_proxy.url, &directory),
+        tokio::time::sleep(Duration::from_secs(5)),
+    ).await.expect("an unmigrated backend must exit instead of serving broken transaction routes");
 
     assert!(!output.status.success());
+    assert!(provider_proxy.requests.try_recv().is_err(), "schema rejection must happen before provider work");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
         error.contains("bank_connections"),
@@ -76,15 +156,26 @@ async fn startup_rejects_missing_import_schema_before_serving_requests(pool: PgP
         error.contains("RUN_MIGRATIONS=1"),
         "startup should explain how to apply the upgrade: {error}"
     );
+    let directory_path = directory.path.clone();
+    drop(directory);
+    assert!(!directory_path.exists(), "startup fixture directory must be removed");
 }
 
-async fn financial_rows(pool: &PgPool, user_id: uuid::Uuid) -> serde_json::Value {
+async fn financial_rows(pool: &PgPool, user_id: uuid::Uuid) -> Result<serde_json::Value, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT jsonb_build_object(
             'user', (SELECT to_jsonb(u) FROM users u WHERE id = $1),
             'transactions', (SELECT jsonb_agg(to_jsonb(t) ORDER BY t.id) FROM transactions t WHERE user_id = $1),
             'budgets', (SELECT jsonb_agg(to_jsonb(b) ORDER BY b.id) FROM budgets b WHERE user_id = $1))"
-    ).bind(user_id).fetch_one(pool).await.unwrap()
+    ).bind(user_id).fetch_one(pool).await
+}
+
+struct StartupObservation {
+    status: reqwest::StatusCode,
+    transactions: serde_json::Value,
+    financial_rows: serde_json::Value,
+    applied: Vec<i64>,
+    provider_request: Option<String>,
 }
 
 #[sqlx::test(migrations = false)]
@@ -98,7 +189,7 @@ async fn startup_migrations_upgrade_existing_rows_and_are_safe_to_repeat(pool: P
         .bind(transaction_id).bind(user_id).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO budgets (user_id, month, category, amount) VALUES ($1, '2026-10-01', 'Groceries', 250.00)")
         .bind(user_id).execute(&pool).await.unwrap();
-    let mut expected_rows = financial_rows(&pool, user_id).await;
+    let mut expected_rows = financial_rows(&pool, user_id).await.unwrap();
     // The import migrations convert the legacy expense sign and add defaults; every other stored field must survive unchanged.
     expected_rows["user"]["reporting_currency"] = serde_json::Value::Null;
     let transaction = &mut expected_rows["transactions"][0];
@@ -125,37 +216,260 @@ async fn startup_migrations_upgrade_existing_rows_and_are_safe_to_repeat(pool: P
 
     // Exercise the real binary twice: initial deployment upgrades the schema, and a restart must not reapply it.
     for _ in 0..2 {
+        let directory = TestDirectory::new();
+        let mut provider_proxy = RejectingProviderProxy::start().await;
         let port = available_port();
-        let mut child = backend(&pool, true, port).spawn().unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        let response = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                panic!("backend exited before serving the upgraded schema: {status}");
-            }
-            if let Ok(response) = client
-                .get(format!("http://127.0.0.1:{port}/api/transactions"))
-                .bearer_auth(&token)
-                .send()
-                .await
-            {
-                break response;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "upgraded backend did not start"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let transactions: serde_json::Value = response.json().await.unwrap();
+        let mut child = backend(&pool, true, port, &provider_proxy.url, &directory).spawn().unwrap();
+        let observation: anyhow::Result<StartupObservation> = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let response = loop {
+                if let Some(status) = child.try_wait()? {
+                    anyhow::bail!("backend exited before serving the upgraded schema: {status}");
+                }
+                if let Ok(response) = client
+                    .get(format!("http://127.0.0.1:{port}/api/transactions"))
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                {
+                    break response;
+                }
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "upgraded backend did not start"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            let status = response.status();
+            let transactions = response.json().await?;
+            let financial_rows = financial_rows(&pool, user_id).await?;
+            let applied = sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE version IN (9, 11) AND success ORDER BY version")
+                .fetch_all(&pool).await?;
+            let provider_request = tokio::time::timeout(
+                Duration::from_secs(5), provider_proxy.requests.recv(),
+            ).await.map_err(|_| anyhow::anyhow!(
+                "the real child worker did not reach its rejecting proxy at {}", provider_proxy.url,
+            ))?;
+            Ok(StartupObservation { status, transactions, financial_rows, applied, provider_request })
+        }.await;
+        // All fallible observations return here so failed checks cannot skip awaiting child cleanup.
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+        provider_proxy.task.abort();
+        let _ = (&mut provider_proxy.task).await;
+        drop(provider_proxy);
+        let directory_path = directory.path.clone();
+        drop(directory);
+        assert!(!directory_path.exists(), "startup fixture directory must be removed");
+        let observation = observation.unwrap();
+        assert_eq!(observation.status, reqwest::StatusCode::OK);
+        let transactions = observation.transactions;
         assert_eq!(transactions.as_array().unwrap().len(), 1);
         assert_eq!(transactions[0]["id"], transaction_id.to_string());
         assert_eq!(transactions[0]["can_revert"], false);
-        assert_eq!(financial_rows(&pool, user_id).await, expected_rows);
-        let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE version IN (9, 11) AND success ORDER BY version")
-            .fetch_all(&pool).await.unwrap();
-        assert_eq!(applied, vec![9, 11]);
-        child.kill().await.unwrap();
-        child.wait().await.unwrap();
+        assert_eq!(observation.financial_rows, expected_rows);
+        assert_eq!(observation.applied, vec![9, 11]);
+        assert_eq!(
+            observation.provider_request.as_deref(),
+            Some("CONNECT api.openai.com:443 HTTP/1.1"),
+            "the child must attempt indexing through the test's rejecting proxy",
+        );
+        assert_eq!(financial_rows(&pool, user_id).await.unwrap(), expected_rows);
+        let embeddings: i64 = sqlx::query_scalar("SELECT count(*) FROM transaction_embeddings")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(embeddings, 0, "a rejected provider request must leave indexing unfinished");
     }
+}
+
+// A controlled dotenv file prevents the probe from ever reading development credentials.
+struct TestDirectory {
+    path: std::path::PathBuf,
+}
+
+impl TestDirectory {
+    fn new() -> Self {
+        let directory = Self {
+            path: std::env::temp_dir().join(format!("financetracker-startup-{}", uuid::Uuid::new_v4())),
+        };
+        std::fs::create_dir(&directory.path).unwrap();
+        std::fs::create_dir(directory.path.join("backend")).unwrap();
+        std::fs::write(directory.path.join("backend/.env"), "").unwrap();
+        directory
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        // Remove only the known fixture files and directories; never recursively remove caller data.
+        let _ = std::fs::remove_file(self.path.join("backend/.env"));
+        let _ = std::fs::remove_dir(self.path.join("backend"));
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
+
+// The test harness is the child entry point, so no test endpoint is added to the production binary.
+#[test]
+#[ignore = "subprocess fixture invoked by the loopback-only isolation regressions"]
+fn loopback_provider_child() {
+    let target = std::env::var("F9_LOOPBACK_TARGET").unwrap();
+    let target = reqwest::Url::parse(&target).unwrap();
+    assert_eq!(target.scheme(), "https");
+    assert_eq!(target.host_str(), Some("127.0.0.1"));
+    dotenvy::from_filename("backend/.env").unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let response = reqwest::Client::new().post(target)
+            .timeout(Duration::from_secs(2)).send().await;
+        assert!(response.is_err(), "the loopback endpoints reject all provider requests");
+    });
+    println!("F9_CHILD_STATE={}", serde_json::json!({
+        "request_method_present": std::env::var_os("REQUEST_METHOD").is_some(),
+        "dotenv_poison_loaded": std::env::var_os("F9_DOTENV_POISON").is_some(),
+    }));
+}
+
+async fn assert_loopback_child_isolated(request_method: Option<&str>, dotenv_method: bool, serial_child: bool) {
+    let directory = TestDirectory::new();
+    let directory_path = directory.path.clone();
+    if dotenv_method {
+        std::fs::write(directory.path.join("backend/.env"),
+            "REQUEST_METHOD=POST\nF9_DOTENV_POISON=loaded\n").unwrap();
+    }
+    let mut proxy = RejectingProviderProxy::start().await;
+    let proxy_address = reqwest::Url::parse(&proxy.url).unwrap();
+    let proxy_address = format!("127.0.0.1:{}", proxy_address.port().unwrap());
+    // A bypass can reach only this loopback listener, which closes without a TLS handshake.
+    let direct = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let direct_address = direct.local_addr().unwrap();
+    let mut direct_task = tokio::spawn(async move { direct.accept().await.unwrap(); });
+    let child_directory = TestDirectory::new();
+    let child_directory_path = child_directory.path.clone();
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child.args(["--ignored", "--exact", "loopback_provider_child", "--nocapture"])
+        .current_dir(&directory.path)
+        .env("F9_LOOPBACK_TARGET", format!("https://{direct_address}/probe"))
+        .env_remove("F9_DOTENV_POISON")
+        .kill_on_drop(true);
+    match request_method {
+        Some(value) => { child.env("REQUEST_METHOD", value); }
+        None => { child.env_remove("REQUEST_METHOD"); }
+    }
+    if serial_child { child.env("RUST_TEST_THREADS", "1"); }
+    isolate_provider_requests(&mut child, &proxy.url, &child_directory);
+    let output = child_output_until(&mut child, tokio::time::sleep(Duration::from_secs(8))).await;
+    let direct_connection = tokio::time::timeout(Duration::from_millis(100), &mut direct_task).await.is_ok();
+    if !direct_connection {
+        direct_task.abort();
+        let _ = direct_task.await;
+    }
+    let request = proxy.requests.try_recv().ok();
+    proxy.task.abort();
+    let _ = (&mut proxy.task).await;
+    drop(proxy);
+    drop(directory);
+    drop(child_directory);
+    assert!(!directory_path.exists(), "caller fixture directory must be removed before assertions");
+    assert!(!child_directory_path.exists(), "child fixture directory must be removed before assertions");
+    // Socket teardown can finish after task cancellation; require both listeners to close within a deadline.
+    for address in [proxy_address, direct_address.to_string()] {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while tokio::net::TcpStream::connect(&address).await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("loopback listeners must close after child and task cleanup");
+    }
+    let output = output.expect("loopback child must exit within its request deadline");
+    assert!(output.status.success(), "loopback child failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let state: serde_json::Value = serde_json::from_str(stdout.lines()
+        .find_map(|line| line.split_once("F9_CHILD_STATE=").map(|(_, state)| state)).unwrap()).unwrap();
+    println!("F9_LOOPBACK_OBSERVATION={}", serde_json::json!({
+        "inherited_request_method": request_method, "dotenv_method": dotenv_method,
+        "direct_connection": direct_connection, "proxy_request": request,
+        "child": state, "directory_removed": true, "listeners_closed": true,
+    }));
+    assert!(!direct_connection, "child bypassed its rejecting proxy and connected directly to loopback");
+    assert_eq!(request.as_deref(), Some(format!("CONNECT {direct_address} HTTP/1.1").as_str()));
+    assert_eq!(state["request_method_present"], false, "REQUEST_METHOD must remain absent after dotenv loading");
+    assert_eq!(state["dotenv_poison_loaded"], false, "child must not load the caller's dotenv file");
+}
+
+#[tokio::test]
+async fn loopback_child_ignores_inherited_request_method() {
+    for request_method in ["GET", ""] {
+        assert_loopback_child_isolated(Some(request_method), false, false).await;
+    }
+}
+
+#[tokio::test]
+async fn loopback_child_prevents_dotenv_restoring_request_method() {
+    assert_loopback_child_isolated(None, true, false).await;
+}
+
+#[tokio::test]
+async fn loopback_child_uses_proxy_without_request_method() {
+    assert_loopback_child_isolated(None, false, false).await;
+}
+
+#[test]
+fn startup_directory_is_removed_on_unwind() {
+    let directory = TestDirectory::new();
+    let path = directory.path.clone();
+    let result = std::panic::catch_unwind(move || {
+        let _directory = directory;
+        panic!("exercise startup-fixture cleanup after a failed assertion");
+    });
+    assert!(result.is_err());
+    assert!(!path.exists(), "startup fixture must also be removed during unwinding");
+}
+
+#[tokio::test]
+async fn serial_child_output_retains_isolation_state() {
+    assert_loopback_child_isolated(None, false, true).await;
+}
+
+#[test]
+#[ignore = "subprocess fixture invoked by the active-child cleanup regression"]
+fn held_cleanup_child() {
+    let address: std::net::SocketAddr = std::env::var("F9_CLEANUP_READY").unwrap().parse().unwrap();
+    assert!(address.ip().is_loopback());
+    let _ready = std::net::TcpStream::connect(address).unwrap();
+    std::thread::sleep(Duration::from_secs(20));
+}
+
+#[tokio::test]
+async fn active_child_deadline_reaps_before_directory_cleanup() {
+    let mut leaked = 0;
+    for attempt in 0..12 {
+        let directory = TestDirectory::new();
+        let path = directory.path.clone();
+        let ready = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--ignored", "--exact", "held_cleanup_child", "--nocapture"])
+            .env("F9_CLEANUP_READY", ready.local_addr().unwrap().to_string())
+            .kill_on_drop(true);
+        isolate_provider_requests(&mut command, "http://127.0.0.1:9", &directory);
+        let mut was_active = false;
+        let result = child_output_until(&mut command, async {
+            was_active = tokio::time::timeout(Duration::from_secs(5), ready.accept()).await.is_ok();
+        }).await;
+        drop(directory);
+        let left_behind = path.exists();
+        leaked += usize::from(left_behind);
+        println!("F9_ACTIVE_CLEANUP={}", serde_json::json!({
+            "attempt": attempt, "child_ready": was_active, "directory_left_behind": left_behind,
+        }));
+        // Clean only this regression's known fixture paths after a failing pre-fix attempt.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while path.exists() {
+                let _ = std::fs::remove_file(path.join("backend/.env"));
+                let _ = std::fs::remove_dir(path.join("backend"));
+                let _ = std::fs::remove_dir(&path);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(was_active, "the deadline must fire only after the child confirms it is active");
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    }
+    assert_eq!(leaked, 0, "active-child deadline left working directories behind");
 }
