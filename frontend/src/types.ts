@@ -35,6 +35,7 @@ export type IndexingStatus = {
 
 export type TransactionInput = Omit<Transaction, "id" | "can_revert" | "row_version">;
 
+// an edit includes the saved version from which its draft was opened.
 export type UpdateTransactionInput = TransactionInput & { expected_version: number };
 
 export type LoginResponse = { 

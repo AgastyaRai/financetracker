@@ -33,10 +33,14 @@ function errorMessage(e: unknown): string {
 
 type AuthMode = "login" | "register";
 type SemanticSearchInput = Parameters<typeof semanticSearchTransactions>[0];
+
+// reload latest waits for the newest transaction request, including one started by an import.
+// logout or unmount finishes the wait without transactions so the old editor cannot be restored.
 type PendingTransactionReload = {
   resolve: (transactions: Transaction[] | undefined) => void;
   reject: (error: unknown) => void;
 };
+
 function localDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -174,6 +178,7 @@ export default function App() {
   // Logout function - clear all auth state
   const logout = useCallback((message?: string, clearStoredSession = true) => {
     requestVersions.current.session++;
+    // finish a waiting reload before clearing the session's editor state.
     pendingTransactionReload.current?.resolve(undefined);
     pendingTransactionReload.current = null;
     checkSessionRef.current = null;
@@ -342,12 +347,14 @@ export default function App() {
       if (!isCurrent()) return;
       setTransactions([...txs].sort((a, b) => b.date.localeCompare(a.date)));
       setIndexingRefreshVersion((value) => value + 1);
+      // give the waiting editor these transactions, even if an import started this newer request.
       const reload = pendingTransactionReload.current;
       pendingTransactionReload.current = null;
       reload?.resolve(txs);
       return txs;
     } catch (e) {
       if (isCurrent()) {
+        // keep the draft after a failed request and let the user try reload latest again.
         const reload = pendingTransactionReload.current;
         pendingTransactionReload.current = null;
         reload?.reject(e);
@@ -571,13 +578,14 @@ export default function App() {
     const isCurrentSession = captureSession();
     setSubmittingEdit(true);
     try {
-      // A dashboard refresh can supersede this read; keep the explicit reload pending until a read is current.
-      const latest = await new Promise<Transaction[] | undefined>((resolve, reject) => {
+      // reload latest starts a transaction request, but an import can start a newer one.
+      // wait for the newest request so the editor can reload even while the first is still pending.
+      const latestTransactions = await new Promise<Transaction[] | undefined>((resolve, reject) => {
         pendingTransactionReload.current = { resolve, reject };
         void refreshTransactions().catch(reject);
       });
-      if (!isCurrentSession() || !latest) return;
-      const transaction = latest.find((transaction) => transaction.id === transactionId);
+      if (!isCurrentSession() || !latestTransactions) return;
+      const transaction = latestTransactions.find((transaction) => transaction.id === transactionId);
       setEditingTransaction(transaction ?? null);
       setEditConflict(false);
       setEditStatus(null);

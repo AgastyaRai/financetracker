@@ -239,6 +239,8 @@ struct TransactionSemanticFields {
     description: Option<String>,
 }
 
+// fields read under the transaction lock before accepting an edit
+// row_version covers all saved changes, while semantic_fields determine whether indexing is needed
 #[derive(sqlx::FromRow)]
 struct TransactionEditState {
     #[sqlx(flatten)]
@@ -376,7 +378,7 @@ pub(crate) async fn update_transaction(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // lock the transaction while checking ownership and whether its semantic fields changed
-    let existing_fields = sqlx::query_as::<_, TransactionEditState>(
+    let existing_transaction = sqlx::query_as::<_, TransactionEditState>(
         "SELECT kind, category, description, row_version, status
          FROM transactions
          WHERE id = $1 AND user_id = $2
@@ -388,17 +390,17 @@ pub(crate) async fn update_transaction(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let Some(existing_fields) = existing_fields else {
+    let Some(existing_transaction) = existing_transaction else {
         return Err((StatusCode::NOT_FOUND, "Transaction not found".to_string()));
     };
 
-    // Check the draft version under the same lock used by imports and other edits.
-    // Reject before changing financial data, override flags, or embeddings.
-    if update.expected_version != existing_fields.row_version || existing_fields.status == "removed" {
+    // check the draft version under the same lock used by imports and other edits.
+    // reject before changing financial data, override flags, or embeddings.
+    if update.expected_version != existing_transaction.row_version || existing_transaction.status == "removed" {
         return Err((StatusCode::CONFLICT, "Transaction changed. Reload latest before saving.".to_string()));
     }
 
-    let semantic_fields_changed = requested_fields != existing_fields.semantic_fields;
+    let semantic_fields_changed = requested_fields != existing_transaction.semantic_fields;
 
     // compare each imported field with its stored value and preserve flags already set
     // update the financial data before making any external provider request

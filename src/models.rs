@@ -79,10 +79,13 @@ pub(crate) struct AddTransactionRequest {
     pub description: Option<String>,
 }
 
+// struct for editing a transaction using the version shown when the draft was opened
 #[derive(serde::Deserialize)]
 pub(crate) struct UpdateTransactionRequest {
+    // keep the transaction fields at the top level of the request body
     #[serde(flatten)]
     pub transaction: AddTransactionRequest,
+    // the save is rejected if the stored transaction has changed since this version
     pub expected_version: i64,
 }
 

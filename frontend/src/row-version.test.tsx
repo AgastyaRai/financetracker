@@ -10,18 +10,29 @@ function monthValue() {
 
 function originalTransaction() {
   return {
-    id: "row-version-coffee", amount: "-10.00", kind: "Expense", category: "Food",
-    date: monthValue() + "-01", description: "Imported coffee", can_revert: false, row_version: 1,
+    id: "row-version-coffee",
+    amount: "-10.00",
+    kind: "Expense",
+    category: "Food",
+    date: monthValue() + "-01",
+    description: "Imported coffee",
+    can_revert: false,
+    row_version: 1,
   };
 }
 
 function jsonResponse(value: unknown, status = 200) {
-  return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => { resolve = complete; });
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
   return { promise, resolve };
 }
 
@@ -29,12 +40,13 @@ let savedTransaction = originalTransaction();
 let updateBodies: Array<Record<string, unknown>> = [];
 
 beforeEach(() => {
+  // start each test with the original saved transaction and a valid login.
   savedTransaction = originalTransaction();
   updateBodies = [];
   const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 }));
   localStorage.setItem("access_token", `header.${payload}.signature`);
 
-  // Exercise the real API client; all HTTP work stays inside this synthetic server contract.
+  // use the real API client with a mocked fetch so no request leaves the test.
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? "GET";
@@ -47,16 +59,28 @@ beforeEach(() => {
     }
     if (method === "GET" && url.startsWith("/api/budgets")) return jsonResponse([]);
     if (method === "POST" && url === "/api/bank-connections/row-version-bank/import") {
-      savedTransaction = { ...savedTransaction, amount: "-12.00", date: monthValue() + "-02", row_version: 2 };
+      savedTransaction = {
+        ...savedTransaction,
+        amount: "-12.00",
+        date: monthValue() + "-02",
+        row_version: 2,
+      };
       return jsonResponse({ imported: 0 });
     }
     if (method === "PUT" && url === "/api/transactions/row-version-coffee") {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       updateBodies.push(body);
       if (body.expected_version !== savedTransaction.row_version) {
-        return jsonResponse({ error: "Transaction changed while you were editing. Reload the latest values before saving." }, 409);
+        return jsonResponse(
+          { error: "Transaction changed while you were editing. Reload the latest values before saving." },
+          409,
+        );
       }
-      savedTransaction = { ...savedTransaction, ...body, row_version: savedTransaction.row_version + 1 };
+      savedTransaction = {
+        ...savedTransaction,
+        ...body,
+        row_version: savedTransaction.row_version + 1,
+      };
       return jsonResponse({ row_version: savedTransaction.row_version });
     }
     throw new Error(`Unexpected network request in row-version test: ${method} ${url}`);
@@ -69,7 +93,9 @@ afterEach(() => {
 
 async function openEditor(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("button", { name: /Edit transaction: Imported coffee/ }));
-  return within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+  const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+  const editorRow = editorForm.closest("tr") as HTMLElement;
+  return within(editorRow);
 }
 
 describe("transaction draft versions", () => {
@@ -82,13 +108,20 @@ describe("transaction draft versions", () => {
 
     await user.click(await screen.findByRole("button", { name: "Import again" }));
     const summary = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
-    await waitFor(() => expect(within(summary).getByText("Money out").closest(".metricTile")).toHaveTextContent("$12.00"));
+    await waitFor(() => {
+      const moneyOutLabel = within(summary).getByText("Money out");
+      const moneyOutTile = moneyOutLabel.closest(".metricTile");
+      expect(moneyOutTile).toHaveTextContent("$12.00");
+    });
     expect(editor.getByLabelText("Amount")).toHaveValue(-10);
     await user.click(editor.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(updateBodies).toHaveLength(1));
     expect(updateBodies[0]).toEqual(expect.objectContaining({
-      amount: "-10.00", date: monthValue() + "-01", description: "My draft description", expected_version: 1,
+      amount: "-10.00",
+      date: monthValue() + "-01",
+      description: "My draft description",
+      expected_version: 1,
     }));
     expect(savedTransaction.amount).toBe("-12.00");
   });
@@ -100,8 +133,13 @@ describe("transaction draft versions", () => {
     await user.clear(editor.getByLabelText("Description (optional)"));
     await user.type(editor.getByLabelText("Description (optional)"), "My unsaved note");
 
-    // Another tab/backend completes an import without refreshing this tab's draft.
-    savedTransaction = { ...savedTransaction, amount: "-12.00", date: monthValue() + "-02", row_version: 2 };
+    // another tab/backend completes an import without refreshing this tab's draft.
+    savedTransaction = {
+      ...savedTransaction,
+      amount: "-12.00",
+      date: monthValue() + "-02",
+      row_version: 2,
+    };
     await user.click(editor.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Transaction changed while you were editing");
     expect(editor.getByLabelText("Description (optional)")).toHaveValue("My unsaved note");
@@ -111,7 +149,9 @@ describe("transaction draft versions", () => {
     expect(savedTransaction.amount).toBe("-12.00");
 
     await user.click(screen.getByRole("button", { name: /reload latest/i }));
-    const reloaded = within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+    const reloadedForm = screen.getByRole("form", { name: "Edit transaction" });
+    const reloadedRow = reloadedForm.closest("tr") as HTMLElement;
+    const reloaded = within(reloadedRow);
     await waitFor(() => expect(reloaded.getByLabelText("Amount")).toHaveValue(-12));
     expect(reloaded.getByLabelText("Date")).toHaveValue(monthValue() + "-02");
     expect(reloaded.getByLabelText("Description (optional)")).toHaveValue("Imported coffee");
@@ -122,32 +162,41 @@ describe("transaction draft versions", () => {
     await user.click(reloaded.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(updateBodies).toHaveLength(2));
     expect(updateBodies[1]).toEqual(expect.objectContaining({
-      amount: "-12.00", date: monthValue() + "-02", description: "Reviewed note", expected_version: 2,
+      amount: "-12.00",
+      date: monthValue() + "-02",
+      description: "Reviewed note",
+      expected_version: 2,
     }));
     expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
   });
+
   it.each(["import-first", "reload-first"])("completes an explicit reload superseded by an import refresh (%s)", async (responseOrder) => {
     const user = userEvent.setup();
     render(<App />);
     const editor = await openEditor(user);
     await user.clear(editor.getByLabelText("Description (optional)"));
     await user.type(editor.getByLabelText("Description (optional)"), "Unsaved note");
-    savedTransaction = { ...savedTransaction, amount: "-12.00", date: monthValue() + "-02", row_version: 2 };
+    savedTransaction = {
+      ...savedTransaction,
+      amount: "-12.00",
+      date: monthValue() + "-02",
+      row_version: 2,
+    };
     await user.click(editor.getByRole("button", { name: "Save changes" }));
     await screen.findByRole("alert");
 
     const importReply = deferred<Response>();
-    const reloadReply = deferred<Response>();
-    const dashboardReply = deferred<Response>();
-    const reloadSnapshot = { ...savedTransaction };
+    const originalReloadReply = deferred<Response>();
+    const importRefreshReply = deferred<Response>();
+    const originalReloadSnapshot = { ...savedTransaction };
     const initialFetch = vi.mocked(fetch).getMockImplementation()!;
     let transactionReads = 0;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       if (String(input) === "/api/bank-connections/row-version-bank/import") return importReply.promise;
       if (String(input) === "/api/transactions" && init?.method === "GET") {
         transactionReads++;
-        if (transactionReads === 1) return reloadReply.promise;
-        if (transactionReads === 2) return dashboardReply.promise;
+        if (transactionReads === 1) return originalReloadReply.promise;
+        if (transactionReads === 2) return importRefreshReply.promise;
       }
       return initialFetch(input, init);
     });
@@ -159,19 +208,46 @@ describe("transaction draft versions", () => {
       expect(screen.getByRole("button", { name: "Reloading…" })).toBeDisabled();
       expect(editor.getByLabelText("Description (optional)")).toHaveValue("Unsaved note");
 
-      savedTransaction = { ...savedTransaction, amount: "-13.00", date: monthValue() + "-03", row_version: 3 };
-      await act(async () => importReply.resolve(jsonResponse({ imported: 0 })));
+      savedTransaction = {
+        ...savedTransaction,
+        amount: "-13.00",
+        date: monthValue() + "-03",
+        row_version: 3,
+      };
+      await act(async () => {
+        const response = jsonResponse({ imported: 0 });
+        importReply.resolve(response);
+      });
       await waitFor(() => expect(transactionReads).toBe(2));
       if (responseOrder === "import-first") {
-        await act(async () => dashboardReply.resolve(jsonResponse([savedTransaction])));
-        await act(async () => reloadReply.resolve(jsonResponse([reloadSnapshot])));
+        await act(async () => {
+          const response = jsonResponse([savedTransaction]);
+          importRefreshReply.resolve(response);
+        });
+        await act(async () => {
+          const response = jsonResponse([originalReloadSnapshot]);
+          originalReloadReply.resolve(response);
+        });
       } else {
-        await act(async () => reloadReply.resolve(jsonResponse([reloadSnapshot])));
-        await act(async () => dashboardReply.resolve(jsonResponse([savedTransaction])));
+        await act(async () => {
+          const response = jsonResponse([originalReloadSnapshot]);
+          originalReloadReply.resolve(response);
+        });
+        await act(async () => {
+          const response = jsonResponse([savedTransaction]);
+          importRefreshReply.resolve(response);
+        });
       }
 
-      await waitFor(() => expect(within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement).getByLabelText("Amount")).toHaveValue(-13));
-      const reloaded = within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+      await waitFor(() => {
+        const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+        const editorRow = editorForm.closest("tr") as HTMLElement;
+        const currentEditor = within(editorRow);
+        expect(currentEditor.getByLabelText("Amount")).toHaveValue(-13);
+      });
+      const reloadedForm = screen.getByRole("form", { name: "Edit transaction" });
+      const reloadedRow = reloadedForm.closest("tr") as HTMLElement;
+      const reloaded = within(reloadedRow);
       expect(reloaded.getByLabelText("Date")).toHaveValue(monthValue() + "-03");
       expect(reloaded.getByLabelText("Description (optional)")).toHaveValue("Imported coffee");
       expect(reloaded.getByRole("button", { name: "Save changes" })).toBeEnabled();
@@ -184,17 +260,19 @@ describe("transaction draft versions", () => {
       await screen.findByText("Transaction updated successfully.");
       expect(updateBodies).toHaveLength(2);
       expect(updateBodies[1]).toEqual(expect.objectContaining({
-        amount: "-13.00", date: monthValue() + "-03", expected_version: 3, description: "Reviewed latest import",
+        amount: "-13.00",
+        date: monthValue() + "-03",
+        expected_version: 3,
+        description: "Reviewed latest import",
       }));
     } finally {
       await act(async () => {
         importReply.resolve(jsonResponse({ imported: 0 }));
-        reloadReply.resolve(jsonResponse([reloadSnapshot]));
-        dashboardReply.resolve(jsonResponse([savedTransaction]));
+        originalReloadReply.resolve(jsonResponse([originalReloadSnapshot]));
+        importRefreshReply.resolve(jsonResponse([savedTransaction]));
       });
     }
   });
-
 });
 
 async function openConflictingDraft(user: ReturnType<typeof userEvent.setup>) {
@@ -202,64 +280,91 @@ async function openConflictingDraft(user: ReturnType<typeof userEvent.setup>) {
   const editor = await openEditor(user);
   await user.clear(editor.getByLabelText("Description (optional)"));
   await user.type(editor.getByLabelText("Description (optional)"), "Unsaved note");
-  savedTransaction = { ...savedTransaction, amount: "-12.00", date: monthValue() + "-02", row_version: 2 };
+  savedTransaction = {
+    ...savedTransaction,
+    amount: "-12.00",
+    date: monthValue() + "-02",
+    row_version: 2,
+  };
   await user.click(editor.getByRole("button", { name: "Save changes" }));
   await screen.findByRole("alert");
 }
 
-function holdReload(outcome: "success" | "http-error" | "network-error" | "removed" | "pending" = "success") {
-  const oldReply = deferred<Response>();
-  const latestReply = deferred<Response>();
-  const oldSnapshot = { ...savedTransaction };
+// hold the GET started by reload latest, then control the newer GET started by import again.
+// keep the first response pending until the test has checked recovery, errors, or logout.
+function holdOriginalReload(importRefreshOutcome: "success" | "http-error" | "network-error" | "removed" | "pending" = "success") {
+  const originalReloadReply = deferred<Response>();
+  const importRefreshReply = deferred<Response>();
+  const originalReloadSnapshot = { ...savedTransaction };
   const initialFetch = vi.mocked(fetch).getMockImplementation()!;
   let transactionReads = 0;
-  let oldSettled = false;
-  void oldReply.promise.then(() => { oldSettled = true; });
+  let originalReloadSettled = false;
+  void originalReloadReply.promise.then(() => {
+    originalReloadSettled = true;
+  });
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     if (String(input) === "/api/bank-connections/row-version-bank/import") {
-      savedTransaction = { ...savedTransaction, amount: "-13.00", date: monthValue() + "-03", row_version: 3 };
+      savedTransaction = {
+        ...savedTransaction,
+        amount: "-13.00",
+        date: monthValue() + "-03",
+        row_version: 3,
+      };
       return jsonResponse({ imported: 0 });
     }
     if (String(input) === "/api/transactions" && init?.method === "GET") {
       transactionReads++;
-      if (transactionReads === 1) return oldReply.promise;
+      if (transactionReads === 1) return originalReloadReply.promise;
       if (transactionReads === 2) {
-        if (outcome === "http-error") return jsonResponse({ error: "Latest refresh failed" }, 500);
-        if (outcome === "network-error") throw new TypeError("Latest refresh failed");
-        if (outcome === "removed") return jsonResponse([]);
-        if (outcome === "pending") return latestReply.promise;
+        if (importRefreshOutcome === "http-error") return jsonResponse({ error: "Latest refresh failed" }, 500);
+        if (importRefreshOutcome === "network-error") throw new TypeError("Latest refresh failed");
+        if (importRefreshOutcome === "removed") return jsonResponse([]);
+        if (importRefreshOutcome === "pending") return importRefreshReply.promise;
       }
     }
     return initialFetch(input, init);
   });
   return {
-    oldReply, latestReply, oldSnapshot,
-    reads: () => transactionReads,
-    oldSettled: () => oldSettled,
-    settle: async () => act(async () => {
-      oldReply.resolve(jsonResponse([oldSnapshot]));
-      latestReply.resolve(jsonResponse([savedTransaction]));
+    originalReloadReply,
+    importRefreshReply,
+    originalReloadSnapshot,
+    transactionReads: () => transactionReads,
+    originalReloadSettled: () => originalReloadSettled,
+    settlePendingResponses: async () => act(async () => {
+      originalReloadReply.resolve(jsonResponse([originalReloadSnapshot]));
+      importRefreshReply.resolve(jsonResponse([savedTransaction]));
     }),
   };
 }
 
 describe("reload recovery while an obsolete read is still pending", () => {
-  it.each([200, 500])("recovers and saves before the obsolete read settles, ignoring its later %s response", async (oldStatus) => {
+  it.each([200, 500])("recovers and saves before the obsolete read settles, ignoring its later %s response", async (lateResponseStatus) => {
     const user = userEvent.setup();
     await openConflictingDraft(user);
-    const held = holdReload();
+    const reloadResponses = holdOriginalReload();
     try {
       await user.click(screen.getByRole("button", { name: "Reload latest" }));
-      await waitFor(() => expect(held.reads()).toBe(1));
+      await waitFor(() => expect(reloadResponses.transactionReads()).toBe(1));
       await user.click(screen.getByRole("button", { name: "Import again" }));
-      await waitFor(() => expect(held.reads()).toBe(2));
+      await waitFor(() => expect(reloadResponses.transactionReads()).toBe(2));
       const summary = screen.getByRole("heading", { name: "Summary" }).closest(".card") as HTMLElement;
-      await waitFor(() => expect(within(summary).getByText("Money out").closest(".metricTile")).toHaveTextContent("$13.00"));
+      await waitFor(() => {
+        const moneyOutLabel = within(summary).getByText("Money out");
+        const moneyOutTile = moneyOutLabel.closest(".metricTile");
+        expect(moneyOutTile).toHaveTextContent("$13.00");
+      });
 
-      // The obsolete response remains unresolved through recovery and the reviewed save.
-      await waitFor(() => expect(within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement).getByLabelText("Amount")).toHaveValue(-13));
-      expect(held.oldSettled()).toBe(false);
-      const editor = within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+      // the obsolete response remains unresolved through recovery and the reviewed save.
+      await waitFor(() => {
+        const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+        const editorRow = editorForm.closest("tr") as HTMLElement;
+        const currentEditor = within(editorRow);
+        expect(currentEditor.getByLabelText("Amount")).toHaveValue(-13);
+      });
+      expect(reloadResponses.originalReloadSettled()).toBe(false);
+      const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+      const editorRow = editorForm.closest("tr") as HTMLElement;
+      const editor = within(editorRow);
       expect(editor.getByLabelText("Date")).toHaveValue(monthValue() + "-03");
       expect(editor.getByRole("button", { name: "Save changes" })).toBeEnabled();
       expect(editor.getByRole("button", { name: "Cancel" })).toBeEnabled();
@@ -268,68 +373,97 @@ describe("reload recovery while an obsolete read is still pending", () => {
       await user.type(editor.getByLabelText("Description (optional)"), "Reviewed current values");
       await user.click(editor.getByRole("button", { name: "Save changes" }));
       await screen.findByText("Transaction updated successfully.");
-      expect(held.oldSettled()).toBe(false);
-      expect(updateBodies[1]).toEqual(expect.objectContaining({ amount: "-13.00", date: monthValue() + "-03", expected_version: 3 }));
+      expect(reloadResponses.originalReloadSettled()).toBe(false);
+      expect(updateBodies[1]).toEqual(expect.objectContaining({
+        amount: "-13.00",
+        date: monthValue() + "-03",
+        expected_version: 3,
+      }));
 
-      await act(async () => held.oldReply.resolve(jsonResponse(oldStatus === 200 ? [held.oldSnapshot] : { error: "Obsolete read failed" }, oldStatus)));
+      await act(async () => {
+        const body = lateResponseStatus === 200
+          ? [reloadResponses.originalReloadSnapshot]
+          : { error: "Obsolete read failed" };
+        const response = jsonResponse(body, lateResponseStatus);
+        reloadResponses.originalReloadReply.resolve(response);
+      });
       expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
       expect(screen.queryByText("Obsolete read failed")).not.toBeInTheDocument();
       expect(screen.getByText("Reviewed current values")).toBeInTheDocument();
-    } finally { await held.settle(); }
+    } finally {
+      await reloadResponses.settlePendingResponses();
+    }
   });
 
   it.each(["http-error", "network-error"] as const)("reports the current %s without waiting for the obsolete read and allows an explicit retry", async (failure) => {
     const user = userEvent.setup();
     await openConflictingDraft(user);
-    const held = holdReload(failure);
+    const reloadResponses = holdOriginalReload(failure);
     try {
       await user.click(screen.getByRole("button", { name: "Reload latest" }));
-      await waitFor(() => expect(held.reads()).toBe(1));
+      await waitFor(() => expect(reloadResponses.transactionReads()).toBe(1));
       await user.click(screen.getByRole("button", { name: "Import again" }));
       await screen.findByText("Latest refresh failed");
-      expect(held.oldSettled()).toBe(false);
-      expect(held.reads()).toBe(2);
-      const editor = within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+      expect(reloadResponses.originalReloadSettled()).toBe(false);
+      expect(reloadResponses.transactionReads()).toBe(2);
+      const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+      const editorRow = editorForm.closest("tr") as HTMLElement;
+      const editor = within(editorRow);
       expect(editor.getByLabelText("Amount")).toHaveValue(-10);
       expect(editor.getByLabelText("Description (optional)")).toHaveValue("Unsaved note");
       expect(editor.getByRole("button", { name: "Save changes" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "Reload latest" })).toBeEnabled();
       await user.click(screen.getByRole("button", { name: "Reload latest" }));
-      await waitFor(() => expect(within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement).getByLabelText("Amount")).toHaveValue(-13));
-      expect(held.oldSettled()).toBe(false);
+      await waitFor(() => {
+        const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+        const editorRow = editorForm.closest("tr") as HTMLElement;
+        const currentEditor = within(editorRow);
+        expect(currentEditor.getByLabelText("Amount")).toHaveValue(-13);
+      });
+      expect(reloadResponses.originalReloadSettled()).toBe(false);
       expect(updateBodies).toHaveLength(1);
-    } finally { await held.settle(); }
+    } finally {
+      await reloadResponses.settlePendingResponses();
+    }
   });
 
   it("closes an unavailable editor before the obsolete read settles", async () => {
     const user = userEvent.setup();
     await openConflictingDraft(user);
-    const held = holdReload("removed");
+    const reloadResponses = holdOriginalReload("removed");
     try {
       await user.click(screen.getByRole("button", { name: "Reload latest" }));
-      await waitFor(() => expect(held.reads()).toBe(1));
+      await waitFor(() => expect(reloadResponses.transactionReads()).toBe(1));
       await user.click(screen.getByRole("button", { name: "Import again" }));
       await screen.findByText("Transaction is no longer available.");
-      expect(held.oldSettled()).toBe(false);
+      expect(reloadResponses.originalReloadSettled()).toBe(false);
       expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
       expect(updateBodies).toHaveLength(1);
-    } finally { await held.settle(); }
+    } finally {
+      await reloadResponses.settlePendingResponses();
+    }
   });
 
-  it.each([200, 500, 401])("ignores old pending reads with a late %s after logout and a new session's pending save", async (oldStatus) => {
+  it.each([200, 500, 401])("ignores old pending reads with a late %s after logout and a new session's pending save", async (lateResponseStatus) => {
     const user = userEvent.setup();
     await openConflictingDraft(user);
-    const held = holdReload("pending");
+    const reloadResponses = holdOriginalReload("pending");
     const writeReply = deferred<Response>();
     try {
       await user.click(screen.getByRole("button", { name: "Reload latest" }));
-      await waitFor(() => expect(held.reads()).toBe(1));
+      await waitFor(() => expect(reloadResponses.transactionReads()).toBe(1));
       await user.click(screen.getByRole("button", { name: "Import again" }));
-      await waitFor(() => expect(held.reads()).toBe(2));
+      await waitFor(() => expect(reloadResponses.transactionReads()).toBe(2));
       await user.click(screen.getByRole("button", { name: "Logout" }));
       expect(localStorage.getItem("access_token")).toBeNull();
-      const nextToken = `header.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 7200 }))}.signature`;
-      let nextTransaction = { ...originalTransaction(), id: "next-coffee", amount: "-7.00", description: "Next user coffee" };
+      const nextPayload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 7200 }));
+      const nextToken = `header.${nextPayload}.signature`;
+      let nextTransaction = {
+        ...originalTransaction(),
+        id: "next-coffee",
+        amount: "-7.00",
+        description: "Next user coffee",
+      };
       const previousFetch = vi.mocked(fetch).getMockImplementation()!;
       let nextSession = false;
       let nextSave: Record<string, unknown> | undefined;
@@ -341,7 +475,11 @@ describe("reload recovery while an obsolete read is still pending", () => {
         if (nextSession && String(input) === "/api/transactions" && init?.method === "GET") return jsonResponse([nextTransaction]);
         if (String(input) === "/api/transactions/next-coffee" && init?.method === "PUT") {
           nextSave = JSON.parse(String(init.body)) as Record<string, unknown>;
-          nextTransaction = { ...nextTransaction, ...nextSave, row_version: nextTransaction.row_version + 1 };
+          nextTransaction = {
+            ...nextTransaction,
+            ...nextSave,
+            row_version: nextTransaction.row_version + 1,
+          };
           return writeReply.promise;
         }
         return previousFetch(input, init);
@@ -349,26 +487,44 @@ describe("reload recovery while an obsolete read is still pending", () => {
       await user.type(screen.getByLabelText("Username or Email"), "next-user");
       await user.type(screen.getByLabelText("Password"), "password{Enter}");
       await user.click(await screen.findByRole("button", { name: /Edit transaction: Next user coffee/ }));
-      const editor = within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+      const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+      const editorRow = editorForm.closest("tr") as HTMLElement;
+      const editor = within(editorRow);
       await user.clear(editor.getByLabelText("Description (optional)"));
       await user.type(editor.getByLabelText("Description (optional)"), "Next draft");
       await user.click(editor.getByRole("button", { name: "Save changes" }));
       await waitFor(() => expect(nextSave).toBeDefined());
-      const readsBeforeOldReplies = vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/transactions" && init?.method === "GET").length;
+      const transactionReadsBeforeLateResponses = vi.mocked(fetch).mock.calls.filter(
+        ([input, init]) => String(input) === "/api/transactions" && init?.method === "GET",
+      );
       await act(async () => {
-        held.oldReply.resolve(jsonResponse([held.oldSnapshot]));
-        held.latestReply.resolve(jsonResponse(oldStatus === 200 ? [savedTransaction] : { error: "Old session failed" }, oldStatus));
+        const originalResponse = jsonResponse([reloadResponses.originalReloadSnapshot]);
+        reloadResponses.originalReloadReply.resolve(originalResponse);
+        const body = lateResponseStatus === 200
+          ? [savedTransaction]
+          : { error: "Old session failed" };
+        const response = jsonResponse(body, lateResponseStatus);
+        reloadResponses.importRefreshReply.resolve(response);
       });
       expect(localStorage.getItem("access_token")).toBe(nextToken);
       expect(editor.getByLabelText("Description (optional)")).toHaveValue("Next draft");
       expect(editor.getByRole("button", { name: "Saving…" })).toBeDisabled();
       expect(screen.queryByText("Old session failed")).not.toBeInTheDocument();
-      expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/transactions" && init?.method === "GET")).toHaveLength(readsBeforeOldReplies);
-      await act(async () => writeReply.resolve(new Response(null, { status: 200 })));
+      const transactionReadsAfterLateResponses = vi.mocked(fetch).mock.calls.filter(
+        ([input, init]) => String(input) === "/api/transactions" && init?.method === "GET",
+      );
+      expect(transactionReadsAfterLateResponses).toHaveLength(transactionReadsBeforeLateResponses.length);
+      await act(async () => {
+        const response = new Response(null, { status: 200 });
+        writeReply.resolve(response);
+      });
       await screen.findByText("Transaction updated successfully.");
     } finally {
-      await held.settle();
-      await act(async () => writeReply.resolve(new Response(null, { status: 200 })));
+      await reloadResponses.settlePendingResponses();
+      await act(async () => {
+        const response = new Response(null, { status: 200 });
+        writeReply.resolve(response);
+      });
     }
   });
 
@@ -387,12 +543,19 @@ describe("reload recovery while an obsolete read is still pending", () => {
     await user.click(screen.getByRole("button", { name: "Reload latest" }));
     await screen.findByText("Current reload failed");
     expect(reads).toBe(1);
-    const editor = within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement);
+    const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+    const editorRow = editorForm.closest("tr") as HTMLElement;
+    const editor = within(editorRow);
     expect(editor.getByLabelText("Description (optional)")).toHaveValue("Unsaved note");
     expect(editor.getByRole("button", { name: "Save changes" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reload latest" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Reload latest" }));
-    await waitFor(() => expect(within(screen.getByRole("form", { name: "Edit transaction" }).closest("tr") as HTMLElement).getByLabelText("Amount")).toHaveValue(-12));
+    await waitFor(() => {
+      const editorForm = screen.getByRole("form", { name: "Edit transaction" });
+      const editorRow = editorForm.closest("tr") as HTMLElement;
+      const currentEditor = within(editorRow);
+      expect(currentEditor.getByLabelText("Amount")).toHaveValue(-12);
+    });
   });
 
   it("logs out on a current reload 401 without retrying or restoring the editor", async () => {

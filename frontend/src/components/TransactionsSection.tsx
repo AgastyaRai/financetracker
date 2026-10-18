@@ -33,7 +33,30 @@ type Props = {
 };
 
 export default function TransactionsSection({
-  indexingRefreshVersion, semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, editConflict, reloadEditingTransaction, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction, handleRevertTransaction, revertingTransactionId
+  indexingRefreshVersion,
+  semanticQuery,
+  setSemanticQuery,
+  semanticLimit,
+  setSemanticLimit,
+  includeSummary,
+  setIncludeSummary,
+  searchingSemantic,
+  handleSemanticSearch,
+  clearSemanticSearch,
+  transactionsStatus,
+  semanticResults,
+  loadingTx,
+  transactions,
+  editingTransaction,
+  submittingEdit,
+  editStatus,
+  editConflict,
+  reloadEditingTransaction,
+  startEditingTransaction,
+  cancelEditingTransaction,
+  handleUpdateTransaction,
+  handleRevertTransaction,
+  revertingTransactionId
 }: Props) {
   const shownSemanticTransactions = semanticResults?.transactions ?? null;
   const shownRows: Array<{ transaction: Transaction; similarity?: number }> = shownSemanticTransactions

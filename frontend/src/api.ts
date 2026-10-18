@@ -26,6 +26,7 @@ function responseErrorMessage(text: string, status: number) {
   return text;
 }
 
+// keep the HTTP status so the editor can recognize a stale-save conflict.
 export class ApiError extends Error {
   readonly status: number;
 

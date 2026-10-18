@@ -36,7 +36,7 @@ mock! {
     }
 }
 
-// Count optional indexing work so a rejected edit cannot silently delete or replace an embedding.
+// count optional indexing work so a rejected edit cannot silently delete or replace an embedding.
 struct RecordingEmbeddingProvider {
     calls: AtomicUsize,
 }
@@ -86,7 +86,7 @@ fn bank_provider(cursor: Option<String>, page: TransactionPage) -> Arc<dyn Plaid
 
 async fn request(
     state: &AppState,
-    jwt: &str,
+    access_token: &str,
     method: &str,
     uri: &str,
     body: Option<Value>,
@@ -94,46 +94,51 @@ async fn request(
     let body = body
         .map(|value| Body::from(value.to_string()))
         .unwrap_or_else(Body::empty);
-    build_app(state.clone())
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .header("Authorization", format!("Bearer {jwt}"))
-                .header("Content-Type", "application/json")
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap()
+    let app = build_app(state.clone());
+    let transaction_request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .unwrap();
+
+    let transaction_response = app.oneshot(transaction_request).await.unwrap();
+    transaction_response
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&body).unwrap()
+    let body = response.into_body().collect().await.unwrap();
+    let body_bytes = body.to_bytes();
+
+    let result: Value = serde_json::from_slice(&body_bytes).unwrap();
+    result
 }
 
-struct Fixture {
+// keep the saved connection, original transaction, and fake provider together for each test
+struct ImportedTransactionFixture {
     state: AppState,
-    jwt: String,
+    access_token: String,
     connection_id: Uuid,
     transaction_id: Uuid,
-    original: Value,
-    embeddings: Arc<RecordingEmbeddingProvider>,
+    original_transaction: Value,
+    embedding_provider: Arc<RecordingEmbeddingProvider>,
 }
 
-impl Fixture {
+impl ImportedTransactionFixture {
     async fn new(pool: PgPool) -> Self {
-        let embeddings = Arc::new(RecordingEmbeddingProvider {
+        // register a user with an isolated database and a provider that records indexing calls
+        let embedding_provider = Arc::new(RecordingEmbeddingProvider {
             calls: AtomicUsize::new(0),
         });
-        let mut state = common::setup_app_state_with_embedding_provider(embeddings.clone()).await;
+        let mut state = common::setup_app_state_with_embedding_provider(embedding_provider.clone()).await;
         state.pool = pool;
         state.bank_credential_cipher = Some(Arc::new(BankCredentialCipher::new(&TEST_KEY)));
         let app = build_app(state.clone());
         let (username, password) = common::create_and_register_test_user(&app).await;
-        let (user_id, jwt) = common::login_test_user(&app, &username, &password).await;
+        let (user_id, access_token) = common::login_test_user(&app, &username, &password).await;
 
+        // save an encrypted fake bank credential so imports use the same path as a real connection
         let provider_id = Uuid::new_v4().to_string();
         let encrypted = BankCredentialCipher::new(&TEST_KEY)
             .encrypt(
@@ -156,6 +161,7 @@ impl Fixture {
         .await
         .unwrap();
 
+        // import the original transaction before opening a draft from its saved values
         state.plaid_provider = Some(bank_provider(
             None,
             TransactionPage {
@@ -168,7 +174,7 @@ impl Fixture {
         ));
         let imported = request(
             &state,
-            &jwt,
+            &access_token,
             "POST",
             &format!("/api/bank-connections/{connection_id}/import"),
             None,
@@ -177,26 +183,27 @@ impl Fixture {
         assert_eq!(imported.status(), StatusCode::OK);
         assert_eq!(response_json(imported).await, json!({ "imported": 1 }));
 
+        // start with a saved embedding so rejected edits must preserve existing search data too
         let indexed = process_embedding_batch(&state, 10).await.unwrap();
         assert_eq!(indexed.indexed, 1);
-        let response = request(&state, &jwt, "GET", "/api/transactions", None).await;
+        let response = request(&state, &access_token, "GET", "/api/transactions", None).await;
         assert_eq!(response.status(), StatusCode::OK);
         let rows = response_json(response).await;
         assert_eq!(rows.as_array().unwrap().len(), 1);
-        let original = rows[0].clone();
-        let transaction_id = original["id"].as_str().unwrap().parse().unwrap();
+        let original_transaction = rows[0].clone();
+        let transaction_id = original_transaction["id"].as_str().unwrap().parse().unwrap();
 
         Self {
             state,
-            jwt,
+            access_token,
             connection_id,
             transaction_id,
-            original,
-            embeddings,
+            original_transaction,
+            embedding_provider,
         }
     }
 
-    // A separate connection pool models another backend instance sharing the same database.
+    // a separate connection pool models another backend instance sharing the same database.
     async fn second_backend(&self) -> AppState {
         let mut state = self.state.clone();
         state.pool = PgPoolOptions::new()
@@ -210,7 +217,7 @@ impl Fixture {
     async fn import(&self, state: &AppState) {
         let response = request(
             state,
-            &self.jwt,
+            &self.access_token,
             "POST",
             &format!("/api/bank-connections/{}/import", self.connection_id),
             None,
@@ -223,7 +230,7 @@ impl Fixture {
     async fn edit(&self, state: &AppState, input: Value) -> axum::response::Response {
         request(
             state,
-            &self.jwt,
+            &self.access_token,
             "PUT",
             &format!("/api/transactions/{}", self.transaction_id),
             Some(input),
@@ -231,7 +238,7 @@ impl Fixture {
         .await
     }
 
-    // Snapshot every affected row, including source, cursor, override flags, and saved search data.
+    // snapshot every affected row, including source, cursor, override flags, and saved search data.
     async fn saved_state(&self) -> Value {
         sqlx::query_scalar(
             "SELECT jsonb_build_object(
@@ -242,7 +249,10 @@ impl Fixture {
              JOIN bank_connections c ON c.connection_id = d.connection_id
              WHERE t.id = $1",
         )
-        .bind(self.transaction_id).fetch_one(&self.state.pool).await.unwrap()
+        .bind(self.transaction_id)
+        .fetch_one(&self.state.pool)
+        .await
+        .unwrap()
     }
 }
 
@@ -257,232 +267,247 @@ fn edit_input(transaction: &Value, description: &str, expected_version: i64) -> 
     })
 }
 
-// Keep each import and indexing scan isolated from other tests running in parallel.
-#[sqlx::test(migrations = "backend/migrations")]
-async fn stale_edit_after_money_only_import_is_rejected_across_backend_instances(pool: PgPool) {
-    let fixture = Fixture::new(pool).await;
-    let mut importer = fixture.second_backend().await;
-    importer.plaid_provider = Some(bank_provider(
-        Some(INITIAL_CURSOR.to_string()),
-        TransactionPage {
-            added: vec![],
-            modified: vec![provider_transaction(12.0, "2026-10-02")],
-            removed: vec![],
-            next_cursor: "row-version-corrected".to_string(),
-            has_more: false,
-        },
-    ));
-    fixture.import(&importer).await;
-    let before = fixture.saved_state().await;
-    assert_eq!(before["transaction"]["amount"], json!(-12.0));
-    assert_eq!(before["transaction"]["date"], "2026-10-02");
-    assert_eq!(before["transaction"]["search_revision"], json!(1));
-    let calls = fixture.embeddings.calls.load(Ordering::SeqCst);
+// use the test module
+#[cfg(test)]
+mod transaction_row_version_tests {
+    use super::*;
 
-    // The draft was opened at the initial version; its money/date still predate the other import.
-    let response = fixture
-        .edit(
+    // keep each import and indexing scan isolated from other tests running in parallel.
+    // test that an import through another backend prevents an old draft from overwriting money and date
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_stale_edit_after_money_only_import_is_rejected_across_backend_instances(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let mut importer = fixture.second_backend().await;
+        importer.plaid_provider = Some(bank_provider(
+            Some(INITIAL_CURSOR.to_string()),
+            TransactionPage {
+                added: vec![],
+                modified: vec![provider_transaction(12.0, "2026-10-02")],
+                removed: vec![],
+                next_cursor: "row-version-corrected".to_string(),
+                has_more: false,
+            },
+        ));
+        fixture.import(&importer).await;
+        let before = fixture.saved_state().await;
+        assert_eq!(before["transaction"]["amount"], json!(-12.0));
+        assert_eq!(before["transaction"]["date"], "2026-10-02");
+        assert_eq!(before["transaction"]["search_revision"], json!(1));
+        let calls = fixture.embedding_provider.calls.load(Ordering::SeqCst);
+
+        // the draft was opened at the initial version; its money/date still predate the other import.
+        let response = fixture
+            .edit(
+                &fixture.state,
+                edit_input(
+                    &fixture.original_transaction,
+                    "Description from the old draft",
+                    INITIAL_ROW_VERSION,
+                ),
+            )
+            .await;
+        let after = fixture.saved_state().await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CONFLICT,
+            "stale save changed amount/date to {}/{} and description to {}",
+            after["transaction"]["amount"],
+            after["transaction"]["date"],
+            after["transaction"]["description"]
+        );
+        assert_eq!(
+            after, before,
+            "rejection must preserve financial, source, cursor, override, and embedding rows"
+        );
+        assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls);
+
+        // explicitly rereading and reviewing the corrected values permits a fresh save.
+        let response = request(
             &fixture.state,
-            edit_input(
-                &fixture.original,
-                "Description from the old draft",
-                INITIAL_ROW_VERSION,
+            &fixture.access_token,
+            "GET",
+            "/api/transactions",
+            None,
+        )
+        .await;
+        let current = response_json(response).await[0].clone();
+        let current_version = current["row_version"].as_i64().unwrap();
+        assert!(current_version > INITIAL_ROW_VERSION);
+        let accepted = fixture
+            .edit(
+                &fixture.state,
+                edit_input(&current, "Reviewed description", current_version),
+            )
+            .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let saved = fixture.saved_state().await;
+        assert!(saved["transaction"]["row_version"].as_i64().unwrap() > current_version);
+        assert_eq!(saved["transaction"]["amount"], json!(-12.0));
+        assert_eq!(saved["transaction"]["date"], "2026-10-02");
+        assert_eq!(saved["transaction"]["description"], "Reviewed description");
+    }
+
+    // test that two backends cannot both save drafts opened from the same transaction version
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_competing_edits_with_the_same_version_have_exactly_one_winner(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let second_backend = fixture.second_backend().await;
+        let calls = fixture.embedding_provider.calls.load(Ordering::SeqCst);
+        let (first_response, second_response) = tokio::join!(
+            fixture.edit(
+                &fixture.state,
+                edit_input(&fixture.original_transaction, "First tab", INITIAL_ROW_VERSION)
             ),
-        )
-        .await;
-    let after = fixture.saved_state().await;
-    assert_eq!(
-        response.status(),
-        StatusCode::CONFLICT,
-        "stale save changed amount/date to {}/{} and description to {}",
-        after["transaction"]["amount"],
-        after["transaction"]["date"],
-        after["transaction"]["description"]
-    );
-    assert_eq!(
-        after, before,
-        "rejection must preserve financial, source, cursor, override, and embedding rows"
-    );
-    assert_eq!(fixture.embeddings.calls.load(Ordering::SeqCst), calls);
-
-    // Explicitly rereading and reviewing the corrected values permits a fresh save.
-    let response = request(
-        &fixture.state,
-        &fixture.jwt,
-        "GET",
-        "/api/transactions",
-        None,
-    )
-    .await;
-    let current = response_json(response).await[0].clone();
-    let current_version = current["row_version"].as_i64().unwrap();
-    assert!(current_version > INITIAL_ROW_VERSION);
-    let accepted = fixture
-        .edit(
-            &fixture.state,
-            edit_input(&current, "Reviewed description", current_version),
-        )
-        .await;
-    assert_eq!(accepted.status(), StatusCode::OK);
-    let saved = fixture.saved_state().await;
-    assert!(saved["transaction"]["row_version"].as_i64().unwrap() > current_version);
-    assert_eq!(saved["transaction"]["amount"], json!(-12.0));
-    assert_eq!(saved["transaction"]["date"], "2026-10-02");
-    assert_eq!(saved["transaction"]["description"], "Reviewed description");
-}
-
-#[sqlx::test(migrations = "backend/migrations")]
-async fn competing_edits_with_the_same_version_have_exactly_one_winner(pool: PgPool) {
-    let fixture = Fixture::new(pool).await;
-    let second = fixture.second_backend().await;
-    let calls = fixture.embeddings.calls.load(Ordering::SeqCst);
-    let (first, second) = tokio::join!(
-        fixture.edit(
-            &fixture.state,
-            edit_input(&fixture.original, "First tab", INITIAL_ROW_VERSION)
-        ),
-        fixture.edit(
-            &second,
-            edit_input(&fixture.original, "Second tab", INITIAL_ROW_VERSION)
-        ),
-    );
-    let mut statuses = vec![first.status().as_u16(), second.status().as_u16()];
-    statuses.sort_unstable();
-    assert_eq!(
-        statuses,
-        vec![200, 409],
-        "both backend instances must not accept the same draft version"
-    );
-    let winner = if first.status() == StatusCode::OK {
-        "First tab"
-    } else {
-        "Second tab"
-    };
-    let saved = fixture.saved_state().await;
-    assert_eq!(saved["transaction"]["description"], winner);
-    assert_eq!(fixture.embeddings.calls.load(Ordering::SeqCst), calls + 1);
-}
-
-#[sqlx::test(migrations = "backend/migrations")]
-async fn edit_without_expected_version_cannot_bypass_the_stale_save_check(pool: PgPool) {
-    let fixture = Fixture::new(pool).await;
-    let before = fixture.saved_state().await;
-    let calls = fixture.embeddings.calls.load(Ordering::SeqCst);
-    let mut input = edit_input(&fixture.original, "Unversioned edit", INITIAL_ROW_VERSION);
-    input.as_object_mut().unwrap().remove("expected_version");
-    let response = fixture.edit(&fixture.state, input).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "an edit request must supply the version on which its draft was based"
-    );
-    assert_eq!(fixture.saved_state().await, before);
-    assert_eq!(fixture.embeddings.calls.load(Ordering::SeqCst), calls);
-}
-
-#[sqlx::test(migrations = "backend/migrations")]
-async fn list_and_semantic_results_expose_the_initial_transaction_version(pool: PgPool) {
-    let fixture = Fixture::new(pool).await;
-    let response = request(
-        &fixture.state,
-        &fixture.jwt,
-        "POST",
-        "/api/transactions/search/semantic",
-        Some(json!({ "query": "coffee", "summary": false })),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let results = response_json(response).await;
-    assert_eq!(results["transactions"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        json!({
-            "list": fixture.original["row_version"],
-            "search": results["transactions"][0]["transaction"]["row_version"]
-        }),
-        json!({ "list": INITIAL_ROW_VERSION, "search": INITIAL_ROW_VERSION }),
-        "both places that can open an editor must return its saved row version"
-    );
-}
-
-#[sqlx::test(migrations = "backend/migrations")]
-async fn import_removal_invalidates_an_already_open_edit(pool: PgPool) {
-    let fixture = Fixture::new(pool).await;
-    let mut importer = fixture.second_backend().await;
-    importer.plaid_provider = Some(bank_provider(
-        Some(INITIAL_CURSOR.to_string()),
-        TransactionPage {
-            added: vec![],
-            modified: vec![],
-            removed: vec![json!({ "transaction_id": SOURCE_ID })],
-            next_cursor: "row-version-removed".to_string(),
-            has_more: false,
-        },
-    ));
-    fixture.import(&importer).await;
-    let before = fixture.saved_state().await;
-    assert_eq!(before["transaction"]["status"], "removed");
-    let calls = fixture.embeddings.calls.load(Ordering::SeqCst);
-    let response = fixture
-        .edit(
-            &fixture.state,
-            edit_input(
-                &fixture.original,
-                "Stale edit of a removed transaction",
-                INITIAL_ROW_VERSION,
+            fixture.edit(
+                &second_backend,
+                edit_input(&fixture.original_transaction, "Second tab", INITIAL_ROW_VERSION)
             ),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(fixture.saved_state().await, before);
-    assert_eq!(fixture.embeddings.calls.load(Ordering::SeqCst), calls);
-}
+        );
+        let mut statuses = vec![
+            first_response.status().as_u16(),
+            second_response.status().as_u16(),
+        ];
+        statuses.sort_unstable();
+        assert_eq!(
+            statuses,
+            vec![200, 409],
+            "both backend instances must not accept the same draft version"
+        );
+        let winning_description = if first_response.status() == StatusCode::OK {
+            "First tab"
+        } else {
+            "Second tab"
+        };
+        let saved = fixture.saved_state().await;
+        assert_eq!(saved["transaction"]["description"], winning_description);
+        assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls + 1);
+    }
 
-#[sqlx::test(migrations = "backend/migrations")]
-async fn revert_that_only_clears_override_flags_invalidates_an_older_edit(pool: PgPool) {
-    let fixture = Fixture::new(pool).await;
-    let first = fixture
-        .edit(
-            &fixture.state,
-            edit_input(&fixture.original, "User note", INITIAL_ROW_VERSION),
-        )
-        .await;
-    assert_eq!(first.status(), StatusCode::OK);
-    let second = fixture
-        .edit(
-            &fixture.state,
-            edit_input(&fixture.original, "Imported coffee", 2),
-        )
-        .await;
-    assert_eq!(second.status(), StatusCode::OK);
-    let before = fixture.saved_state().await;
-    assert_eq!(before["transaction"]["description_overridden"], true);
-    let calls = fixture.embeddings.calls.load(Ordering::SeqCst);
+    // test that leaving the version out of a save cannot bypass the stale draft check
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_edit_without_expected_version_cannot_bypass_the_stale_save_check(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let before = fixture.saved_state().await;
+        let calls = fixture.embedding_provider.calls.load(Ordering::SeqCst);
+        let mut input = edit_input(&fixture.original_transaction, "Unversioned edit", INITIAL_ROW_VERSION);
+        input.as_object_mut().unwrap().remove("expected_version");
+        let response = fixture.edit(&fixture.state, input).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "an edit request must supply the version on which its draft was based"
+        );
+        assert_eq!(fixture.saved_state().await, before);
+        assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls);
+    }
 
-    // Revert still changes future import behavior when the visible description already matches its source.
-    let reverted = request(
-        &fixture.state,
-        &fixture.jwt,
-        "POST",
-        &format!("/api/transactions/{}/revert", fixture.transaction_id),
-        None,
-    )
-    .await;
-    assert_eq!(reverted.status(), StatusCode::OK);
-    let after_revert = fixture.saved_state().await;
-    assert_eq!(after_revert["transaction"]["description_overridden"], false);
-    assert_eq!(
-        after_revert["transaction"]["search_revision"],
-        before["transaction"]["search_revision"]
-    );
-    assert_eq!(fixture.embeddings.calls.load(Ordering::SeqCst), calls);
-
-    let stale = fixture
-        .edit(
+    // test that the transaction list and search results both provide the version needed to open a draft
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_list_and_semantic_results_expose_the_initial_transaction_version(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let response = request(
             &fixture.state,
-            edit_input(&fixture.original, "Draft from before Revert", 3),
+            &fixture.access_token,
+            "POST",
+            "/api/transactions/search/semantic",
+            Some(json!({ "query": "coffee", "summary": false })),
         )
         .await;
-    assert_eq!(stale.status(), StatusCode::CONFLICT);
-    assert_eq!(fixture.saved_state().await, after_revert);
-    assert_eq!(fixture.embeddings.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(response.status(), StatusCode::OK);
+        let results = response_json(response).await;
+        assert_eq!(results["transactions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json!({
+                "list": fixture.original_transaction["row_version"],
+                "search": results["transactions"][0]["transaction"]["row_version"]
+            }),
+            json!({ "list": INITIAL_ROW_VERSION, "search": INITIAL_ROW_VERSION }),
+            "both places that can open an editor must return its saved row version"
+        );
+    }
+
+    // test that an import removing the transaction also prevents an already open draft from saving
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_import_removal_invalidates_an_already_open_edit(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let mut importer = fixture.second_backend().await;
+        importer.plaid_provider = Some(bank_provider(
+            Some(INITIAL_CURSOR.to_string()),
+            TransactionPage {
+                added: vec![],
+                modified: vec![],
+                removed: vec![json!({ "transaction_id": SOURCE_ID })],
+                next_cursor: "row-version-removed".to_string(),
+                has_more: false,
+            },
+        ));
+        fixture.import(&importer).await;
+        let before = fixture.saved_state().await;
+        assert_eq!(before["transaction"]["status"], "removed");
+        let calls = fixture.embedding_provider.calls.load(Ordering::SeqCst);
+        let response = fixture
+            .edit(
+                &fixture.state,
+                edit_input(
+                    &fixture.original_transaction,
+                    "Stale edit of a removed transaction",
+                    INITIAL_ROW_VERSION,
+                ),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(fixture.saved_state().await, before);
+        assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls);
+    }
+
+    // test that revert invalidates an older draft even when it only changes override flags
+    #[sqlx::test(migrations = "backend/migrations")]
+    async fn test_revert_that_only_clears_override_flags_invalidates_an_older_edit(pool: PgPool) {
+        let fixture = ImportedTransactionFixture::new(pool).await;
+        let first_response = fixture
+            .edit(
+                &fixture.state,
+                edit_input(&fixture.original_transaction, "User note", INITIAL_ROW_VERSION),
+            )
+            .await;
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let second_response = fixture
+            .edit(
+                &fixture.state,
+                edit_input(&fixture.original_transaction, "Imported coffee", 2),
+            )
+            .await;
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let before = fixture.saved_state().await;
+        assert_eq!(before["transaction"]["description_overridden"], true);
+        let calls = fixture.embedding_provider.calls.load(Ordering::SeqCst);
+
+        // revert still changes future import behavior when the visible description already matches its source.
+        let reverted = request(
+            &fixture.state,
+            &fixture.access_token,
+            "POST",
+            &format!("/api/transactions/{}/revert", fixture.transaction_id),
+            None,
+        )
+        .await;
+        assert_eq!(reverted.status(), StatusCode::OK);
+        let after_revert = fixture.saved_state().await;
+        assert_eq!(after_revert["transaction"]["description_overridden"], false);
+        assert_eq!(
+            after_revert["transaction"]["search_revision"],
+            before["transaction"]["search_revision"]
+        );
+        assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls);
+
+        let stale = fixture
+            .edit(
+                &fixture.state,
+                edit_input(&fixture.original_transaction, "Draft from before Revert", 3),
+            )
+            .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(fixture.saved_state().await, after_revert);
+        assert_eq!(fixture.embedding_provider.calls.load(Ordering::SeqCst), calls);
+    }
 }

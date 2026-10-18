@@ -13,7 +13,16 @@ type Props = {
   onCancel: () => void;
 };
 
-export default function TransactionEditor({ transaction, similarity, showSimilarity, submitting, status, conflicted, onSave, onCancel }: Props) {
+export default function TransactionEditor({
+  transaction,
+  similarity,
+  showSimilarity,
+  submitting,
+  status,
+  conflicted,
+  onSave,
+  onCancel
+}: Props) {
   const [amount, setAmount] = useState(() => transaction.amount);
   const [kind, setKind] = useState<TransactionKind>(transaction.kind);
   const [date, setDate] = useState(transaction.date);
