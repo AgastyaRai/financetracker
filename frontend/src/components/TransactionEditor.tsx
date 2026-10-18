@@ -8,11 +8,12 @@ type Props = {
   showSimilarity: boolean;
   submitting: boolean;
   status: StatusMessage | null;
+  conflicted: boolean;
   onSave: (input: TransactionInput) => Promise<void>;
   onCancel: () => void;
 };
 
-export default function TransactionEditor({ transaction, similarity, showSimilarity, submitting, status, onSave, onCancel }: Props) {
+export default function TransactionEditor({ transaction, similarity, showSimilarity, submitting, status, conflicted, onSave, onCancel }: Props) {
   const [amount, setAmount] = useState(() => transaction.amount);
   const [kind, setKind] = useState<TransactionKind>(transaction.kind);
   const [date, setDate] = useState(transaction.date);
@@ -75,6 +76,7 @@ export default function TransactionEditor({ transaction, similarity, showSimilar
             id={formId} aria-label="Edit transaction" className="transactionEditActions"
             onSubmit={(event) => {
               event.preventDefault();
+              if (conflicted || submitting) return;
               void onSave({
                 amount, kind, date,
                 category: category.trim() || null,
@@ -83,8 +85,8 @@ export default function TransactionEditor({ transaction, similarity, showSimilar
             }}
           >
             <button
-              type="submit" className="transactionRowAction transactionRowActionSave" disabled={submitting}
-              aria-label={submitting ? "Saving…" : "Save changes"} title={submitting ? "Saving…" : "Save changes"}
+              type="submit" className="transactionRowAction transactionRowActionSave" disabled={submitting || conflicted}
+              aria-label={submitting && !conflicted ? "Saving…" : "Save changes"} title={submitting && !conflicted ? "Saving…" : "Save changes"}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d={submitting ? "M5 12h.01M12 12h.01M19 12h.01" : "m5 12 5 5 9-10"} />

@@ -12,6 +12,7 @@ import { useRequestLifecycle } from "./hooks/useRequestLifecycle";
 import ConnectBank from "./ConnectBank";
 import type { Transaction, TransactionInput, TransactionKind, Budget, BudgetProgress, SemanticSearchResult } from "./types";
 import {
+  ApiError,
   addTransaction,
   updateTransaction,
   revertTransaction,
@@ -32,6 +33,10 @@ function errorMessage(e: unknown): string {
 
 type AuthMode = "login" | "register";
 type SemanticSearchInput = Parameters<typeof semanticSearchTransactions>[0];
+type PendingTransactionReload = {
+  resolve: (transactions: Transaction[] | undefined) => void;
+  reject: (error: unknown) => void;
+};
 function localDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -131,6 +136,8 @@ export default function App() {
   const [submittingEdit, setSubmittingEdit] = useState(false);
   const [revertingTransactionId, setRevertingTransactionId] = useState<string | null>(null);
   const [editStatus, setEditStatus] = useState<StatusMessage | null>(null);
+  const [editConflict, setEditConflict] = useState(false);
+  const pendingTransactionReload = useRef<PendingTransactionReload | null>(null);
 
   // Add transaction form state
   const [amount, setAmount] = useState("12.34");
@@ -167,6 +174,8 @@ export default function App() {
   // Logout function - clear all auth state
   const logout = useCallback((message?: string, clearStoredSession = true) => {
     requestVersions.current.session++;
+    pendingTransactionReload.current?.resolve(undefined);
+    pendingTransactionReload.current = null;
     checkSessionRef.current = null;
     // Clear any existing logout timer
     if (logoutTimerRef.current) {
@@ -184,6 +193,7 @@ export default function App() {
     setSubmittingEdit(false);
     setRevertingTransactionId(null);
     setEditStatus(null);
+    setEditConflict(false);
     activeSemanticSearch.current = null;
     setBudgets([]);
     setProgress([]);
@@ -264,6 +274,8 @@ export default function App() {
     return () => {
       setUnauthorizedCallback(null);
       versions.session++;
+      pendingTransactionReload.current?.resolve(undefined);
+      pendingTransactionReload.current = null;
     };
   }, [logout, requestVersions]);
 
@@ -330,8 +342,17 @@ export default function App() {
       if (!isCurrent()) return;
       setTransactions([...txs].sort((a, b) => b.date.localeCompare(a.date)));
       setIndexingRefreshVersion((value) => value + 1);
+      const reload = pendingTransactionReload.current;
+      pendingTransactionReload.current = null;
+      reload?.resolve(txs);
+      return txs;
     } catch (e) {
-      if (isCurrent()) throw e;
+      if (isCurrent()) {
+        const reload = pendingTransactionReload.current;
+        pendingTransactionReload.current = null;
+        reload?.reject(e);
+        throw e;
+      }
     } finally {
       if (isCurrent()) setLoadingTx(false);
     }
@@ -533,6 +554,7 @@ export default function App() {
     if (submittingEdit) return;
     setEditingTransaction(transaction);
     setEditStatus(null);
+    setEditConflict(false);
     setTransactionsStatus(null);
   }
 
@@ -540,6 +562,31 @@ export default function App() {
     if (submittingEdit) return;
     setEditingTransaction(null);
     setEditStatus(null);
+    setEditConflict(false);
+  }
+
+  async function reloadEditingTransaction() {
+    if (!editingTransaction || submittingEdit) return;
+    const transactionId = editingTransaction.id;
+    const isCurrentSession = captureSession();
+    setSubmittingEdit(true);
+    try {
+      // A dashboard refresh can supersede this read; keep the explicit reload pending until a read is current.
+      const latest = await new Promise<Transaction[] | undefined>((resolve, reject) => {
+        pendingTransactionReload.current = { resolve, reject };
+        void refreshTransactions().catch(reject);
+      });
+      if (!isCurrentSession() || !latest) return;
+      const transaction = latest.find((transaction) => transaction.id === transactionId);
+      setEditingTransaction(transaction ?? null);
+      setEditConflict(false);
+      setEditStatus(null);
+      if (!transaction) setTransactionsStatus({ text: "Transaction is no longer available.", type: "error" });
+    } catch (e: unknown) {
+      if (isCurrentSession()) setEditStatus({ text: errorMessage(e), type: "error" });
+    } finally {
+      if (isCurrentSession()) setSubmittingEdit(false);
+    }
   }
 
   async function handleUpdateTransaction(input: TransactionInput) {
@@ -552,7 +599,7 @@ export default function App() {
   }
 
   async function handleTransactionWrite(transaction: Transaction, input?: TransactionInput) {
-    if (!isAuthenticated || submittingEdit) return;
+    if (!isAuthenticated || submittingEdit || (input && editConflict)) return;
     setEditStatus(null);
     if (input && (!input.amount.trim() || !Number.isFinite(Number(input.amount)) || Number(input.amount) === 0)) {
       setEditStatus({ text: "Amount must not be zero", type: "error" });
@@ -572,7 +619,7 @@ export default function App() {
     setTransactionsStatus(null);
     try {
       if (input) {
-        await updateTransaction(transactionId, input);
+        await updateTransaction(transactionId, { ...input, expected_version: transaction.row_version });
         savedInput = input;
       } else {
         const originalFields = await revertTransaction(transactionId);
@@ -582,7 +629,10 @@ export default function App() {
     } catch (e: unknown) {
       if (isCurrentSession()) {
         if (isRevert) setTransactionsStatus({ text: errorMessage(e), type: "error" });
-        else setEditStatus({ text: errorMessage(e), type: "error" });
+        else {
+          setEditStatus({ text: errorMessage(e), type: "error" });
+          if (e instanceof ApiError && e.status === 409) setEditConflict(true);
+        }
         setSubmittingEdit(false);
         setRevertingTransactionId(null);
       }
@@ -593,7 +643,7 @@ export default function App() {
     requestVersions.current.transactions++;
     requestVersions.current.search++;
     setTransactions((current) => {
-      const updated = { id: transactionId, ...savedInput, ...(isRevert ? { can_revert: false } : {}) };
+      const updated = { ...transaction, ...savedInput, ...(isRevert ? { can_revert: false } : {}) };
       const next = current.some((transaction) => transaction.id === transactionId)
         ? current.map((transaction) => transaction.id === transactionId ? { ...transaction, ...updated } : transaction)
         : [...current, updated];
@@ -602,6 +652,7 @@ export default function App() {
     setSemanticResults(null);
     setSearchingSemantic(false);
     setEditingTransaction(null);
+    setEditConflict(false);
     setTransactionsStatus({ text: isRevert ? "Imported fields reverted successfully." : "Transaction updated successfully.", type: "success" });
 
     const refreshMonth = selectedMonthStartRef.current;
@@ -813,6 +864,7 @@ export default function App() {
         clearSemanticSearch={clearSemanticSearch} transactionsStatus={transactionsStatus}
         semanticResults={semanticResults} loadingTx={loadingTx} transactions={transactions}
         editingTransaction={editingTransaction} submittingEdit={submittingEdit} editStatus={editStatus}
+        editConflict={editConflict} reloadEditingTransaction={reloadEditingTransaction}
         startEditingTransaction={startEditingTransaction} cancelEditingTransaction={cancelEditingTransaction}
         handleUpdateTransaction={handleUpdateTransaction}
         handleRevertTransaction={handleRevertTransaction} revertingTransactionId={revertingTransactionId}

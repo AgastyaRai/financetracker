@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1 AND status <> 'removed'",
+  "query": "SELECT id, amount, kind, category, date, description, row_version FROM transactions WHERE user_id = $1 AND status <> 'removed'",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,11 @@
         "ordinal": 5,
         "name": "description",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "row_version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -45,8 +50,9 @@
       false,
       true,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "015a10908be3c38a0b1aa65e04ee91098d6434d9b23d8c27be362bac4708bbd4"
+  "hash": "2ff670ebeda54419c51e77369aae1a11e560388031eceb50a622439477c297fd"
 }

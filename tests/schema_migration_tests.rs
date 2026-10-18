@@ -214,6 +214,7 @@ struct UpgradedLegacyTransaction {
     category_overridden: bool,
     description_overridden: bool,
     search_revision: i32,
+    row_version: i64,
 }
 
 #[derive(FromRow)]
@@ -288,7 +289,7 @@ async fn verify_populated_legacy_upgrade(pool: &PgPool) -> Result<()> {
     let transaction = sqlx::query_as::<_, UpgradedLegacyTransaction>(
         "SELECT user_id, amount, kind, category, description, date, origin, status, currency,
                 created_at, updated_at, kind_overridden, category_overridden,
-                description_overridden, search_revision
+                description_overridden, search_revision, row_version
          FROM transactions
          WHERE id = $1",
     )
@@ -322,12 +323,13 @@ async fn verify_populated_legacy_upgrade(pool: &PgPool) -> Result<()> {
         "legacy override markers must begin false"
     );
     ensure!(transaction.search_revision == 1, "legacy transaction revision was not 1");
+    ensure!(transaction.row_version == 1, "legacy transaction row version was not 1");
 
     // read the old expense by its original ID and check that its positive amount became an outflow
     let expense = sqlx::query_as::<_, UpgradedLegacyTransaction>(
         "SELECT user_id, amount, kind, category, description, date, origin, status, currency,
                 created_at, updated_at, kind_overridden, category_overridden,
-                description_overridden, search_revision
+                description_overridden, search_revision, row_version
          FROM transactions
          WHERE id = $1",
     )
@@ -336,6 +338,7 @@ async fn verify_populated_legacy_upgrade(pool: &PgPool) -> Result<()> {
     .await?;
     ensure!(expense.user_id == user_id, "legacy expense owner changed");
     ensure!(expense.kind == "expense", "legacy expense kind changed");
+    ensure!(expense.row_version == 1, "legacy expense row version was not 1");
     ensure!(expense.amount == Decimal::new(-3456, 2), "legacy expense was not converted to a negative outflow");
 
     // the amount's sign represents money flow; the rejected direction and source-history columns should not exist

@@ -101,7 +101,7 @@ describe("transaction updates", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     localStorage.setItem("access_token", "edit-token");
-    const input = { amount: "40.50", kind: "Expense" as const, category: null, date: "2026-10-12", description: "Coffee" };
+    const input = { expected_version: 1, amount: "40.50", kind: "Expense" as const, category: null, date: "2026-10-12", description: "Coffee" };
     await expect(updateTransaction("transaction-id", input)).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledWith("/api/transactions/transaction-id", expect.objectContaining({
       method: "PUT", body: JSON.stringify(input),

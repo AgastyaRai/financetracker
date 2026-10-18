@@ -20,7 +20,10 @@ const apiMocks = vi.hoisted(() => ({
   upsertBudget: vi.fn(),
 }));
 
-vi.mock("./api", () => apiMocks);
+vi.mock("./api", async (importOriginal) => {
+  const { ApiError } = await importOriginal<typeof import("./api")>();
+  return { ...apiMocks, ApiError };
+});
 
 function tokenWithExpiry(expiryTime: number) {
   const payload = btoa(JSON.stringify({ exp: Math.floor(expiryTime / 1000) }));
@@ -703,7 +706,7 @@ function privateSearchResult(description: string): SemanticSearchResult {
   return {
     transactions: [{
       transaction: {
-        id: description, amount: "25.00", kind: "Expense", category: "Food",
+        id: description, row_version: 1, amount: "25.00", kind: "Expense", category: "Food",
         date: monthValue() + "-10", description,
       },
       similarity_score: 0.9,
@@ -1059,7 +1062,7 @@ describe("responsive chart data", () => {
 describe("transaction editing", () => {
   function originalTransaction(): Transaction {
     return {
-      id: "edit-coffee", amount: "-25.00", kind: "Expense", category: "Food",
+      id: "edit-coffee", row_version: 1, amount: "-25.00", kind: "Expense", category: "Food",
       date: monthValue() + "-10", description: "Coffee",
     };
   }
@@ -1150,7 +1153,7 @@ describe("transaction editing", () => {
     apiMocks.getTransactions.mockResolvedValue([updated]);
     await user.click(form.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(apiMocks.updateTransaction).toHaveBeenCalledWith("edit-coffee", {
-      amount: "40.5", kind: "Income", category: "Refund",
+      expected_version: 1, amount: "40.5", kind: "Income", category: "Refund",
       date: monthValue() + "-12", description: "Returned coffee",
     }));
     expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
@@ -1541,7 +1544,7 @@ describe("indexing progress integration", () => {
   it.each(["create", "edit", "revert"])("rechecks completed progress after a successful transaction %s", async (operation) => {
     const user = userEvent.setup();
     const transaction: Transaction = {
-      id: "progress-import", amount: "-12.50", kind: "Expense", category: "Food",
+      id: "progress-import", row_version: 1, amount: "-12.50", kind: "Expense", category: "Food",
       date: monthValue() + "-12", description: "Imported grocery", can_revert: true,
     };
     apiMocks.getTransactions.mockResolvedValue([transaction]);

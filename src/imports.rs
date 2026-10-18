@@ -314,7 +314,7 @@ async fn save_transactions(
     // apply removals after pending-to-posted matching; a removed pending ID no longer identifies the posted row
     for provider_transaction_id in batch.removed {
         sqlx::query(
-            "UPDATE transactions t SET status = 'removed', updated_at = CURRENT_TIMESTAMP
+            "UPDATE transactions t SET status = 'removed', updated_at = CURRENT_TIMESTAMP, row_version = t.row_version + 1
              FROM imported_transaction_details d
              WHERE d.transaction_id = t.id AND d.connection_id = $1 AND t.user_id = $2
                AND d.provider = $3 AND d.provider_transaction_id = $4",
@@ -406,6 +406,7 @@ async fn save_transaction(
     sqlx::query(
         "UPDATE transactions SET amount = $3, date = $4, currency = $5, status = $6,
              kind = $7, category = $8, description = $9, updated_at = CURRENT_TIMESTAMP,
+             row_version = row_version + 1,
              search_revision = search_revision + CASE WHEN $10 THEN 1 ELSE 0 END
          WHERE id = $1 AND user_id = $2",
     )

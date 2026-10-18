@@ -79,10 +79,18 @@ pub(crate) struct AddTransactionRequest {
     pub description: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct UpdateTransactionRequest {
+    #[serde(flatten)]
+    pub transaction: AddTransactionRequest,
+    pub expected_version: i64,
+}
+
 // struct for transaction response
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Transaction {
     pub id: uuid::Uuid,
+    pub row_version: i64,
     pub user_id: uuid::Uuid,
     pub amount: Decimal,
     pub kind: TransactionKind,

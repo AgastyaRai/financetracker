@@ -7,6 +7,7 @@ describe("analytics calculations", () => {
     const transactions: Transaction[] = [
       {
         id: "grocery-outflow",
+        row_version: 1,
         amount: "-80.00",
         kind: "Expense",
         category: "Groceries",
@@ -15,6 +16,7 @@ describe("analytics calculations", () => {
       },
       {
         id: "grocery-refund",
+        row_version: 1,
         amount: "20.00",
         kind: "Expense",
         category: "Groceries",
@@ -23,6 +25,7 @@ describe("analytics calculations", () => {
       },
       {
         id: "income-classified-outflow",
+        row_version: 1,
         amount: "-30.00",
         kind: "Income",
         category: "Groceries",
@@ -31,6 +34,7 @@ describe("analytics calculations", () => {
       },
       {
         id: "travel-outflow",
+        row_version: 1,
         amount: "-10.00",
         kind: "Expense",
         category: "Travel",
@@ -39,6 +43,7 @@ describe("analytics calculations", () => {
       },
       {
         id: "travel-refund",
+        row_version: 1,
         amount: "25.00",
         kind: "Expense",
         category: "Travel",
@@ -56,6 +61,7 @@ describe("analytics calculations", () => {
     const transactions: Transaction[] = [
       {
         id: "expense-classified-inflow",
+        row_version: 1,
         amount: "100.00",
         kind: "Expense",
         category: "Food",
@@ -64,6 +70,7 @@ describe("analytics calculations", () => {
       },
       {
         id: "income-classified-outflow",
+        row_version: 1,
         amount: "-25.00",
         kind: "Income",
         category: "Pay",
