@@ -651,7 +651,12 @@ export default function App() {
     requestVersions.current.transactions++;
     requestVersions.current.search++;
     setTransactions((current) => {
-      const updated = { ...transaction, ...savedInput, ...(isRevert ? { can_revert: false } : {}) };
+      // a successful edit advances its expected version once, even if the following refresh fails.
+      const updated = {
+        ...transaction,
+        ...savedInput,
+        ...(isRevert ? { can_revert: false } : { row_version: transaction.row_version + 1 }),
+      };
       const next = current.some((transaction) => transaction.id === transactionId)
         ? current.map((transaction) => transaction.id === transactionId ? { ...transaction, ...updated } : transaction)
         : [...current, updated];

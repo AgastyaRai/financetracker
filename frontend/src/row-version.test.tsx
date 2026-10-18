@@ -81,7 +81,7 @@ beforeEach(() => {
         ...body,
         row_version: savedTransaction.row_version + 1,
       };
-      return jsonResponse({ row_version: savedTransaction.row_version });
+      return new Response(null, { status: 200 });
     }
     throw new Error(`Unexpected network request in row-version test: ${method} ${url}`);
   }));
@@ -99,6 +99,95 @@ async function openEditor(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("transaction draft versions", () => {
+  it.each(["http-error", "network-error"])("keeps the saved version for a second edit after its refresh fails (%s)", async (refreshFailure) => {
+    const user = userEvent.setup();
+    render(<App />);
+    const editor = await openEditor(user);
+
+    // fail only the read after the first successful save; the next edit must still use its saved version.
+    const initialFetch = vi.mocked(fetch).getMockImplementation()!;
+    let refreshFailed = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/transactions" && init?.method === "GET" && updateBodies.length > 0 && !refreshFailed) {
+        refreshFailed = true;
+        if (refreshFailure === "network-error") throw new TypeError("Refresh unavailable");
+        return jsonResponse({ error: "Refresh unavailable" }, 500);
+      }
+      return initialFetch(input, init);
+    });
+    await user.clear(editor.getByLabelText("Description (optional)"));
+    await user.type(editor.getByLabelText("Description (optional)"), "First saved note");
+    await user.click(editor.getByRole("button", { name: "Save changes" }));
+    const refreshWarning = await screen.findByRole("alert");
+    expect(refreshWarning).toHaveTextContent("Transaction was updated, but the dashboard could not refresh: Refresh unavailable");
+    expect(savedTransaction.row_version).toBe(2);
+    expect(savedTransaction.description).toBe("First saved note");
+
+    // reopen the locally retained row without another writer, then save a second description.
+    await user.click(screen.getByRole("button", { name: /Edit transaction: First saved note/ }));
+    const secondForm = screen.getByRole("form", { name: "Edit transaction" });
+    const secondRow = secondForm.closest("tr") as HTMLElement;
+    const secondEditor = within(secondRow);
+    await user.clear(secondEditor.getByLabelText("Description (optional)"));
+    await user.type(secondEditor.getByLabelText("Description (optional)"), "Second saved note");
+    await user.click(secondEditor.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updateBodies).toHaveLength(2));
+    expect(updateBodies[0].expected_version).toBe(1);
+    expect(updateBodies[1].expected_version).toBe(2);
+    expect(await screen.findByText("Transaction updated successfully.")).toBeInTheDocument();
+    expect(savedTransaction.description).toBe("Second saved note");
+    expect(savedTransaction.row_version).toBe(3);
+    expect(savedTransaction.amount).toBe("-10.00");
+    expect(savedTransaction.date).toBe(monthValue() + "-01");
+    expect(screen.queryByRole("form", { name: "Edit transaction" })).not.toBeInTheDocument();
+  });
+
+  it("still rejects a later import when a second edit follows a failed refresh", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const editor = await openEditor(user);
+    const initialFetch = vi.mocked(fetch).getMockImplementation()!;
+    let refreshFailed = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/transactions" && init?.method === "GET" && updateBodies.length > 0 && !refreshFailed) {
+        refreshFailed = true;
+        return jsonResponse({ error: "Refresh unavailable" }, 500);
+      }
+      return initialFetch(input, init);
+    });
+    await user.clear(editor.getByLabelText("Description (optional)"));
+    await user.type(editor.getByLabelText("Description (optional)"), "First saved note");
+    await user.click(editor.getByRole("button", { name: "Save changes" }));
+    const refreshWarning = await screen.findByRole("alert");
+    expect(refreshWarning).toHaveTextContent("dashboard could not refresh");
+
+    // an import in another tab advances the stored row without refreshing this tab's saved snapshot.
+    savedTransaction = {
+      ...savedTransaction,
+      amount: "-12.00",
+      date: monthValue() + "-02",
+      row_version: 3,
+    };
+    await user.click(screen.getByRole("button", { name: /Edit transaction: First saved note/ }));
+    const secondForm = screen.getByRole("form", { name: "Edit transaction" });
+    const secondRow = secondForm.closest("tr") as HTMLElement;
+    const secondEditor = within(secondRow);
+    await user.clear(secondEditor.getByLabelText("Description (optional)"));
+    await user.type(secondEditor.getByLabelText("Description (optional)"), "New unsaved note");
+    await user.click(secondEditor.getByRole("button", { name: "Save changes" }));
+    const conflict = await screen.findByRole("alert");
+    expect(conflict).toHaveTextContent("Transaction changed while you were editing");
+    expect(updateBodies).toHaveLength(2);
+    expect(updateBodies[1].expected_version).toBe(2);
+    expect(savedTransaction.amount).toBe("-12.00");
+    expect(savedTransaction.date).toBe(monthValue() + "-02");
+    expect(savedTransaction.description).toBe("First saved note");
+    expect(savedTransaction.row_version).toBe(3);
+    expect(secondEditor.getByLabelText("Description (optional)")).toHaveValue("New unsaved note");
+    expect(secondEditor.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reload latest" })).toBeEnabled();
+  });
+
   it("sends the draft's original version even after an import refreshes the list", async () => {
     const user = userEvent.setup();
     render(<App />);
