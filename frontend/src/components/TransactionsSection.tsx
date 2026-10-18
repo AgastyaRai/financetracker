@@ -23,6 +23,8 @@ type Props = {
   editingTransaction: Transaction | null;
   submittingEdit: boolean;
   editStatus: StatusMessage | null;
+  editConflict: boolean;
+  reloadEditingTransaction: () => Promise<void>;
   startEditingTransaction: (transaction: Transaction) => void;
   cancelEditingTransaction: () => void;
   handleUpdateTransaction: (input: TransactionInput) => Promise<void>;
@@ -31,7 +33,7 @@ type Props = {
 };
 
 export default function TransactionsSection({
-  indexingRefreshVersion, semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction, handleRevertTransaction, revertingTransactionId
+  indexingRefreshVersion, semanticQuery, setSemanticQuery, semanticLimit, setSemanticLimit, includeSummary, setIncludeSummary, searchingSemantic, handleSemanticSearch, clearSemanticSearch, transactionsStatus, semanticResults, loadingTx, transactions, editingTransaction, submittingEdit, editStatus, editConflict, reloadEditingTransaction, startEditingTransaction, cancelEditingTransaction, handleUpdateTransaction, handleRevertTransaction, revertingTransactionId
 }: Props) {
   const shownSemanticTransactions = semanticResults?.transactions ?? null;
   const shownRows: Array<{ transaction: Transaction; similarity?: number }> = shownSemanticTransactions
@@ -154,6 +156,12 @@ export default function TransactionsSection({
         <div id="transaction-edit-error"><StatusMessageView message={editStatus} /></div>
       )}
 
+      {editingTransaction && editConflict && (
+        <button type="button" disabled={submittingEdit} onClick={() => void reloadEditingTransaction()}>
+          {submittingEdit ? "Reloading…" : "Reload latest"}
+        </button>
+      )}
+
       {semanticResults?.summary && (
         <div className="card" style={{ marginBottom: 14 }}>
           <h3>AI Summary</h3>
@@ -191,9 +199,10 @@ export default function TransactionsSection({
             <tbody>
               {rows.map(({ transaction: t, similarity }) => editingTransaction?.id === t.id ? (
                 <TransactionEditor
-                  key={t.id} transaction={editingTransaction} similarity={similarity}
+                  key={`${t.id}:${editingTransaction.row_version}`} transaction={editingTransaction} similarity={similarity}
                   showSimilarity={shownSemanticTransactions !== null}
                   submitting={submittingEdit} status={editStatus}
+                  conflicted={editConflict}
                   onSave={handleUpdateTransaction} onCancel={cancelEditingTransaction}
                 />
               ) : (

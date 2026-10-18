@@ -239,6 +239,14 @@ struct TransactionSemanticFields {
     description: Option<String>,
 }
 
+#[derive(sqlx::FromRow)]
+struct TransactionEditState {
+    #[sqlx(flatten)]
+    semantic_fields: TransactionSemanticFields,
+    row_version: i64,
+    status: String,
+}
+
 // borrowed semantic fields from a transaction request
 // are copied into the same owned structure used for database results
 impl TransactionSemanticFields {
@@ -354,9 +362,10 @@ pub(crate) async fn update_transaction(
     auth: AuthenticatedUser,
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(transaction_id): axum::extract::Path<uuid::Uuid>,
-    axum::extract::Json(req): axum::extract::Json<AddTransactionRequest>
+    axum::extract::Json(update): axum::extract::Json<UpdateTransactionRequest>
 ) -> Result<StatusCode, (StatusCode, String)> {
 
+    let req = update.transaction;
     validate_transaction_request(&req)?;
 
     // convert the TransactionKind to a string for storage
@@ -367,8 +376,8 @@ pub(crate) async fn update_transaction(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // lock the transaction while checking ownership and whether its semantic fields changed
-    let existing_fields = sqlx::query_as::<_, TransactionSemanticFields>(
-        "SELECT kind, category, description
+    let existing_fields = sqlx::query_as::<_, TransactionEditState>(
+        "SELECT kind, category, description, row_version, status
          FROM transactions
          WHERE id = $1 AND user_id = $2
          FOR UPDATE"
@@ -383,7 +392,13 @@ pub(crate) async fn update_transaction(
         return Err((StatusCode::NOT_FOUND, "Transaction not found".to_string()));
     };
 
-    let semantic_fields_changed = requested_fields != existing_fields;
+    // Check the draft version under the same lock used by imports and other edits.
+    // Reject before changing financial data, override flags, or embeddings.
+    if update.expected_version != existing_fields.row_version || existing_fields.status == "removed" {
+        return Err((StatusCode::CONFLICT, "Transaction changed. Reload latest before saving.".to_string()));
+    }
+
+    let semantic_fields_changed = requested_fields != existing_fields.semantic_fields;
 
     // compare each imported field with its stored value and preserve flags already set
     // update the financial data before making any external provider request
@@ -393,6 +408,7 @@ pub(crate) async fn update_transaction(
              kind_overridden = kind_overridden OR (origin = 'imported' AND kind IS DISTINCT FROM $2),
              category_overridden = category_overridden OR (origin = 'imported' AND category IS DISTINCT FROM $3),
              description_overridden = description_overridden OR (origin = 'imported' AND description IS DISTINCT FROM $5),
+             row_version = row_version + 1,
              search_revision = search_revision + CASE WHEN $8 THEN 1 ELSE 0 END
          WHERE id = $6 AND user_id = $7
          RETURNING search_revision"
@@ -492,6 +508,7 @@ pub(crate) async fn revert_transaction(
     let search_revision = sqlx::query_scalar::<_, i32>(
         "UPDATE transactions SET kind = $1, category = $2, description = $3,
          kind_overridden = FALSE, category_overridden = FALSE, description_overridden = FALSE,
+         row_version = row_version + 1,
          search_revision = search_revision + CASE WHEN $6 THEN 1 ELSE 0 END
          WHERE id = $4 AND user_id = $5 RETURNING search_revision"
     )
@@ -659,7 +676,7 @@ pub(crate) async fn get_transactions(
     // fetch all the user's transactions from the database
     // keep removed transactions stored for history, but exclude them from this list
     let transactions = sqlx::query!(
-        "SELECT id, amount, kind, category, date, description FROM transactions WHERE user_id = $1 AND status <> 'removed'",
+        "SELECT id, amount, kind, category, date, description, row_version FROM transactions WHERE user_id = $1 AND status <> 'removed'",
         auth.user_id
     )
     .fetch_all(&state.pool)
@@ -674,6 +691,7 @@ pub(crate) async fn get_transactions(
         .into_iter()
         .map(|transaction| Transaction {
             id: transaction.id,
+            row_version: transaction.row_version,
             can_revert: revertible_ids.contains(&transaction.id),
             user_id: auth.user_id,
             amount: transaction.amount,
@@ -898,7 +916,7 @@ pub(crate) async fn semantic_transaction_search(
     // check the transaction owner too so an incorrect embedding user ID cannot expose another user's data
     // exclude removed transactions before ordering and limiting the search results
     let rows = sqlx::query(
-        "SELECT t.id, t.user_id, t.amount, t.kind, t.category, t.date, t.description,
+        "SELECT t.id, t.user_id, t.amount, t.kind, t.category, t.date, t.description, t.row_version,
                     1.0 - (embed.embedding <=> $2) as similarity_score
         FROM transaction_embeddings embed
         JOIN transactions t
@@ -934,6 +952,7 @@ pub(crate) async fn semantic_transaction_search(
 
             let transaction = Transaction {
                 id: row.get("id"),
+                row_version: row.get("row_version"),
                 can_revert: revertible_ids.contains(&row.get("id")),
                 user_id: row.get("user_id"),
                 amount: row.get("amount"),

@@ -226,7 +226,7 @@ async fn revert_clears_imported_overrides_and_preserves_money_date_and_source() 
             "PUT",
             &format!("/api/transactions/{id}"),
             serde_json::json!({
-                "amount": "-75.50", "date": "2026-03-12", "kind": "Income",
+                "expected_version": 1, "amount": "-75.50", "date": "2026-03-12", "kind": "Income",
                 "category": "Travel", "description": "My commute"
             }),
         ))
@@ -281,10 +281,10 @@ async fn revert_clears_overrides_when_values_already_match_without_refreshing_se
 
     // Edit away from the imported values, then type the originals back in.
     // Equal values do not release overrides: only an explicit Revert should do that.
-    for (kind, category, description) in [
+    for (index, (kind, category, description)) in [
         ("Income", "Travel", "My commute"),
         ("Expense", "Transportation", "Original commute"),
-    ] {
+    ].into_iter().enumerate() {
         let response = app
             .clone()
             .oneshot(request(
@@ -292,7 +292,7 @@ async fn revert_clears_overrides_when_values_already_match_without_refreshing_se
                 "PUT",
                 &format!("/api/transactions/{id}"),
                 serde_json::json!({
-                    "amount": "-50.00", "date": "2026-03-01", "kind": kind,
+                    "expected_version": index + 1, "amount": "-50.00", "date": "2026-03-01", "kind": kind,
                     "category": category, "description": description
                 }),
             ))
@@ -632,7 +632,7 @@ async fn delayed_revert_embedding_cannot_overwrite_a_newer_edit() {
     .await
     .unwrap();
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), app.clone().oneshot(request(&token, "PUT", &format!("/api/transactions/{}", id), serde_json::json!({
-        "amount": "80.00", "kind": "Income", "date": "2026-03-13", "category": "Newer", "description": "Newer edit"
+        "expected_version": 2, "amount": "80.00", "kind": "Income", "date": "2026-03-13", "category": "Newer", "description": "Newer edit"
     })))).await.unwrap().unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     provider.release.notify_one();

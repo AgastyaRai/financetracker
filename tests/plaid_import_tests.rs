@@ -784,7 +784,7 @@ async fn test_plaid_corrections_apply_after_revert_releases_user_overrides() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({
-                        "amount": "-20.00", "date": "2026-10-01", "kind": "Income",
+                        "expected_version": 1, "amount": "-20.00", "date": "2026-10-01", "kind": "Income",
                         "category": "My category", "description": "My purchase"
                     })
                     .to_string(),

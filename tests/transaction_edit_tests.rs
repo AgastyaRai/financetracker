@@ -243,8 +243,10 @@ fn transaction_body(
 fn update_request(
     access_token: &str,
     transaction_id: uuid::Uuid,
-    body: serde_json::Value,
+    expected_version: i64,
+    mut body: serde_json::Value,
 ) -> axum::http::Request<axum::body::Body> {
+    body["expected_version"] = serde_json::json!(expected_version);
     axum::http::Request::builder()
         .method("PUT")
         .uri(format!("/api/transactions/{}", transaction_id))
@@ -456,6 +458,7 @@ async fn test_update_amount_and_date_does_not_regenerate_embedding() {
     let request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-75.00, "2026-03-02", "Transportation", "Original commute"),
     );
     let response = app.oneshot(request).await.unwrap();
@@ -502,6 +505,7 @@ async fn test_update_semantic_fields_replaces_embedding() {
     let request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "Updated train commute"),
     );
     let response = app.oneshot(request).await.unwrap();
@@ -540,6 +544,7 @@ async fn test_update_provider_failure_preserves_transaction_and_removes_stale_em
     let request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "Updated train commute"),
     );
     let response = app.oneshot(request).await.unwrap();
@@ -589,6 +594,7 @@ async fn test_worker_repairs_embedding_after_update_provider_failure(pool: sqlx:
     let update = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "Updated train commute"),
     );
     let update_response = app.clone().oneshot(update).await.unwrap();
@@ -885,6 +891,7 @@ async fn test_user_cannot_update_another_users_transaction() {
     let request = update_request(
         &second_access_token,
         transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "Unauthorized update"),
     );
     let response = app.oneshot(request).await.unwrap();
@@ -923,6 +930,7 @@ async fn test_delayed_update_cannot_overwrite_newer_embedding() {
     let first_request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "First concurrent update"),
     );
     let first_app = app.clone();
@@ -937,6 +945,7 @@ async fn test_delayed_update_cannot_overwrite_newer_embedding() {
     let second_request = update_request(
         &access_token,
         transaction_id,
+        2,
         transaction_body(-50.00, "2026-03-01", "Travel", "Second concurrent update"),
     );
     // the timeout makes the test fail if the first edit is holding a database lock that blocks the second
@@ -997,6 +1006,7 @@ async fn test_delayed_update_cannot_overwrite_newer_same_fields_embedding() {
     let first_request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "Repeated concurrent update"),
     );
     let first_app = app.clone();
@@ -1011,6 +1021,7 @@ async fn test_delayed_update_cannot_overwrite_newer_same_fields_embedding() {
     let intermediate_request = update_request(
         &access_token,
         transaction_id,
+        2,
         transaction_body(
             -50.00,
             "2026-03-01",
@@ -1032,6 +1043,7 @@ async fn test_delayed_update_cannot_overwrite_newer_same_fields_embedding() {
     let final_request = update_request(
         &access_token,
         transaction_id,
+        3,
         transaction_body(-50.00, "2026-03-01", "Travel", "Repeated concurrent update"),
     );
     let final_response = tokio::time::timeout(Duration::from_secs(5), app.oneshot(final_request))
@@ -1123,6 +1135,7 @@ async fn test_update_rejects_zero_amount_and_preserves_existing_transaction() {
     let request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(0.00, "2026-03-02", "Travel", "Invalid update"),
     );
 
@@ -1166,6 +1179,7 @@ async fn test_update_accepts_negative_amount() {
     let request = update_request(
         &access_token,
         transaction_id,
+        1,
         transaction_body(-10.00, "2026-03-02", "Transportation", "Original commute"),
     );
 
@@ -1324,7 +1338,7 @@ async fn test_imported_category_edit_sets_only_category_override() {
         // keep kind, amount, date, and description unchanged in the owner's API request
         let mut body = transaction_body(-50.00, "2026-03-01", "Transportation", "Original commute");
         body["category"] = serde_json::json!(edited_category);
-        let response = app.oneshot(update_request(&access_token, transaction_id, body)).await.unwrap();
+        let response = app.oneshot(update_request(&access_token, transaction_id, 1, body)).await.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
         // only the edited category should become an override; the entire source row must remain intact
@@ -1351,7 +1365,7 @@ async fn test_imported_kind_edit_sets_only_kind_override() {
     // reclassify the signed outflow as a transfer without editing its category or description
     let mut body = transaction_body(-50.00, "2026-03-01", "Transportation", "Original commute");
     body["kind"] = serde_json::json!("Transfer");
-    let response = app.oneshot(update_request(&access_token, transaction_id, body)).await.unwrap();
+    let response = app.oneshot(update_request(&access_token, transaction_id, 1, body)).await.unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
 
     // the new classification is a user override, while the stored original remains an expense
@@ -1382,7 +1396,7 @@ async fn test_imported_description_edit_sets_only_description_override() {
         // send only a description change through the authenticated update endpoint
         let mut body = transaction_body(-50.00, "2026-03-01", "Transportation", "Original commute");
         body["description"] = serde_json::json!(edited_description);
-        let response = app.oneshot(update_request(&access_token, transaction_id, body)).await.unwrap();
+        let response = app.oneshot(update_request(&access_token, transaction_id, 1, body)).await.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
         // kind and category were not edited, and no part of the source row should be rewritten
@@ -1412,7 +1426,7 @@ async fn test_imported_unchanged_fields_leave_override_flags_unset() {
         let mut body = transaction_body(-75.00, "2026-03-02", "Transportation", "Original commute");
         body["category"] = serde_json::json!(category);
         body["description"] = serde_json::json!(description);
-        let response = app.oneshot(update_request(&access_token, transaction_id, body)).await.unwrap();
+        let response = app.oneshot(update_request(&access_token, transaction_id, 1, body)).await.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
         // including a field in the request must not itself count as overriding that field
@@ -1438,7 +1452,7 @@ async fn test_manual_edits_leave_import_override_flags_unset() {
     // change all three descriptive fields so this distinguishes manual and imported edits
     let mut body = transaction_body(-50.00, "2026-03-01", "Travel", "Updated commute");
     body["kind"] = serde_json::json!("Transfer");
-    let response = app.oneshot(update_request(&access_token, transaction_id, body)).await.unwrap();
+    let response = app.oneshot(update_request(&access_token, transaction_id, 1, body)).await.unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
 
     // a manual transaction has no imported interpretation to mark as overridden
@@ -1463,6 +1477,7 @@ async fn test_imported_later_edits_preserve_override_flags() {
     // the first edit overrides only the category
     let response = app.clone().oneshot(update_request(
         &access_token, transaction_id,
+        1,
         transaction_body(-50.00, "2026-03-01", "Travel", "Original commute"),
     )).await.unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -1475,6 +1490,7 @@ async fn test_imported_later_edits_preserve_override_flags() {
     // a later description edit must add its flag without clearing the unchanged category's flag
     let response = app.clone().oneshot(update_request(
         &access_token, transaction_id,
+        2,
         transaction_body(-50.00, "2026-03-01", "Travel", "Updated commute"),
     )).await.unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -1488,6 +1504,7 @@ async fn test_imported_later_edits_preserve_override_flags() {
     // an amount/date-only save must preserve both flags without another embedding request
     let response = app.oneshot(update_request(
         &access_token, transaction_id,
+        3,
         transaction_body(-75.00, "2026-03-02", "Travel", "Updated commute"),
     )).await.unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);

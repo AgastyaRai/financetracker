@@ -18,6 +18,7 @@ export type BankImportResponse = {
 
 export type Transaction = {
   id: string;
+  row_version: number;
   amount: string; // Decimal from backend
   kind: TransactionKind;
   category: string | null;
@@ -32,7 +33,9 @@ export type IndexingStatus = {
   remaining: number;
 };
 
-export type TransactionInput = Omit<Transaction, "id" | "can_revert">;
+export type TransactionInput = Omit<Transaction, "id" | "can_revert" | "row_version">;
+
+export type UpdateTransactionInput = TransactionInput & { expected_version: number };
 
 export type LoginResponse = { 
   user_id: string;

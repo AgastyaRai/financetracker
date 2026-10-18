@@ -110,6 +110,7 @@ async fn startup_migrations_upgrade_existing_rows_and_are_safe_to_repeat(pool: P
     transaction["category_overridden"] = serde_json::json!(false);
     transaction["description_overridden"] = serde_json::json!(false);
     transaction["search_revision"] = serde_json::json!(1);
+    transaction["row_version"] = serde_json::json!(1);
     transaction["updated_at"] = transaction["created_at"].clone();
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),

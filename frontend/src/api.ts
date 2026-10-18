@@ -1,4 +1,4 @@
-import type { LoginResponse, Transaction, TransactionInput, Budget, BudgetProgress, SemanticSearchResult, IndexingStatus } from "./types";
+import type { LoginResponse, Transaction, TransactionInput, UpdateTransactionInput, Budget, BudgetProgress, SemanticSearchResult, IndexingStatus } from "./types";
 
 import type { BankLinkToken, BankConnectionResponse, BankImportResponse } from "./types";
 
@@ -24,6 +24,15 @@ function responseErrorMessage(text: string, status: number) {
   }
 
   return text;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -57,7 +66,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const msg = await res.text().catch(() => "");
-    throw new Error(responseErrorMessage(msg, res.status));
+    throw new ApiError(responseErrorMessage(msg, res.status), res.status);
   }
 
   const text = await res.text();
@@ -86,7 +95,7 @@ export async function addTransaction(tx: TransactionInput): Promise<void> {
   });
 }
 
-export async function updateTransaction(id: string, tx: TransactionInput): Promise<void> {
+export async function updateTransaction(id: string, tx: UpdateTransactionInput): Promise<void> {
   await request<void>(`/transactions/${encodeURIComponent(id)}`, {
     method: "PUT",
     body: JSON.stringify(tx),
